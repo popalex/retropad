@@ -40,7 +40,7 @@ typedef struct AppState {
     /* Smart undo/redo */
     gint lastUndoLength;
     gint64 lastUndoTime;
-    gint lastNewlineCount;
+    gchar lastChar;  /* Track last character for efficient break detection */
 } AppState;
 
 static AppState g_app = {0};
@@ -88,6 +88,14 @@ static void FreeUndoEntry(gpointer data) {
     }
 }
 
+static gboolean IsSignificantChar(gchar c) {
+    /* Check if character is a break point in undo/redo */
+    return c == '\n' || c == ' ' || c == '\t' || 
+           c == ',' || c == '.' || c == ';' || c == ':' || 
+           c == '!' || c == '?' || c == '-' || c == '(' || c == ')' ||
+           c == '\0';  /* Also treat end of text as significant */
+}
+
 static void PushUndoStack(void) {
     if (g_app.isUndoRedoInProgress) return;
     
@@ -99,37 +107,28 @@ static void PushUndoStack(void) {
     /* Get current time */
     gint64 currentTime = g_get_monotonic_time();
     
-    /* Count significant characters (newlines, spaces, punctuation) */
-    gint significantCharCount = 0;
-    char *fullText = NULL;
-    int textLen = 0;
-    if (GetEditText(&fullText, &textLen)) {
-        for (int i = 0; i < textLen; i++) {
-            char c = fullText[i];
-            /* Count newlines, spaces, tabs, and common punctuation as breaks */
-            if (c == '\n' || c == ' ' || c == '\t' || 
-                c == ',' || c == '.' || c == ';' || c == ':' || 
-                c == '!' || c == '?' || c == '-' || c == '(' || c == ')') {
-                significantCharCount++;
-            }
-        }
-        g_free(fullText);
+    /* Get last character in buffer for efficient break detection */
+    gchar lastChar = '\0';
+    if (currentLength > 0) {
+        GtkTextIter lastIter;
+        gtk_text_buffer_get_iter_at_offset(g_app.textBuffer, &lastIter, currentLength - 1);
+        lastChar = gtk_text_iter_get_char(&lastIter);
     }
     
     /* Smart grouping: Only push a new undo state if:
      * 1. More than 500ms has passed since last undo
      * 2. Text was deleted (length decreased)
-     * 3. A significant character was inserted (Enter, space, punctuation, etc)
+     * 3. A significant character was just typed
      */
     gboolean shouldPush = TRUE;
     
     if (!g_queue_is_empty(g_app.undoStack)) {
         gint timeDiff = (currentTime - g_app.lastUndoTime) / 1000; /* Convert to ms */
         gint lengthDiff = currentLength - g_app.lastUndoLength;
-        gint significantDiff = significantCharCount - g_app.lastNewlineCount;
+        gboolean isSignificant = IsSignificantChar(lastChar);
         
-        /* If less than 500ms, text grew (adding chars), and no new significant char, don't push */
-        if (timeDiff < 500 && lengthDiff > 0 && significantDiff == 0) {
+        /* If less than 500ms, text grew (adding chars), and last char not significant, don't push */
+        if (timeDiff < 500 && lengthDiff > 0 && !isSignificant) {
             shouldPush = FALSE;
         }
     }
@@ -146,7 +145,7 @@ static void PushUndoStack(void) {
     /* Update tracking variables */
     g_app.lastUndoLength = currentLength;
     g_app.lastUndoTime = currentTime;
-    g_app.lastNewlineCount = significantCharCount;
+    g_app.lastChar = lastChar;
 }
 
 static void ClearRedoStack(void) {
@@ -379,7 +378,7 @@ static void DoFileNew(void) {
     g_queue_clear(g_app.undoStack);
     g_app.lastUndoLength = 0;
     g_app.lastUndoTime = 0;
-    g_app.lastNewlineCount = 0;
+    g_app.lastChar = '\0';
     UpdateTitle();
     UpdateStatusBar();
 }
@@ -459,19 +458,6 @@ static gboolean LoadDocumentFromPath(const char *path) {
 
     gtk_text_buffer_set_text(g_app.textBuffer, text, -1);
     
-    /* Count significant characters (newlines, spaces, punctuation) */
-    gint significantCharCount = 0;
-    if (text) {
-        for (int i = 0; text[i]; i++) {
-            char c = text[i];
-            if (c == '\n' || c == ' ' || c == '\t' || 
-                c == ',' || c == '.' || c == ';' || c == ':' || 
-                c == '!' || c == '?' || c == '-' || c == '(' || c == ')') {
-                significantCharCount++;
-            }
-        }
-    }
-    
     g_free(text);
     strncpy(g_app.currentPath, path, MAX_PATH_BUFFER - 1);
     g_app.encoding = enc;
@@ -481,7 +467,7 @@ static gboolean LoadDocumentFromPath(const char *path) {
     g_queue_clear(g_app.undoStack);
     g_app.lastUndoLength = 0;
     g_app.lastUndoTime = 0;
-    g_app.lastNewlineCount = significantCharCount;
+    g_app.lastChar = '\0';
     UpdateTitle();
     UpdateStatusBar();
     return TRUE;
@@ -967,7 +953,7 @@ int main(int argc, char *argv[]) {
     g_app.isUndoRedoInProgress = FALSE;
     g_app.lastUndoLength = 0;
     g_app.lastUndoTime = 0;
-    g_app.lastNewlineCount = 0;
+    g_app.lastChar = '\0';
 
     g_app.wordWrap = TRUE;
     g_app.statusVisible = TRUE;
