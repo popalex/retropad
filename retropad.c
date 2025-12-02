@@ -673,7 +673,7 @@ static void on_menu_help_about(GtkWidget *widget, gpointer user_data) {
     gtk_widget_destroy(dialog);
 }
 
-static GtkWidget *CreateMenuBar(void) {
+static GtkWidget *CreateMenuBar(GtkAccelGroup *accelGroup) {
     GtkWidget *menubar = gtk_menu_bar_new();
 
     // File menu
@@ -683,24 +683,29 @@ static GtkWidget *CreateMenuBar(void) {
 
     GtkWidget *newItem = gtk_menu_item_new_with_mnemonic("_New");
     g_signal_connect(newItem, "activate", G_CALLBACK(on_menu_file_new), NULL);
+    gtk_widget_add_accelerator(newItem, "activate", accelGroup, GDK_KEY_n, GDK_CONTROL_MASK, GTK_ACCEL_VISIBLE);
     gtk_menu_shell_append(GTK_MENU_SHELL(fileMenu), newItem);
 
     GtkWidget *openItem = gtk_menu_item_new_with_mnemonic("_Open");
     g_signal_connect(openItem, "activate", G_CALLBACK(on_menu_file_open), NULL);
+    gtk_widget_add_accelerator(openItem, "activate", accelGroup, GDK_KEY_o, GDK_CONTROL_MASK, GTK_ACCEL_VISIBLE);
     gtk_menu_shell_append(GTK_MENU_SHELL(fileMenu), openItem);
 
     GtkWidget *saveItem = gtk_menu_item_new_with_mnemonic("_Save");
     g_signal_connect(saveItem, "activate", G_CALLBACK(on_menu_file_save), NULL);
+    gtk_widget_add_accelerator(saveItem, "activate", accelGroup, GDK_KEY_s, GDK_CONTROL_MASK, GTK_ACCEL_VISIBLE);
     gtk_menu_shell_append(GTK_MENU_SHELL(fileMenu), saveItem);
 
     GtkWidget *saveAsItem = gtk_menu_item_new_with_mnemonic("Save _As");
     g_signal_connect(saveAsItem, "activate", G_CALLBACK(on_menu_file_save_as), NULL);
+    gtk_widget_add_accelerator(saveAsItem, "activate", accelGroup, GDK_KEY_s, GDK_CONTROL_MASK | GDK_SHIFT_MASK, GTK_ACCEL_VISIBLE);
     gtk_menu_shell_append(GTK_MENU_SHELL(fileMenu), saveAsItem);
 
     gtk_menu_shell_append(GTK_MENU_SHELL(fileMenu), gtk_separator_menu_item_new());
 
     GtkWidget *exitItem = gtk_menu_item_new_with_mnemonic("E_xit");
     g_signal_connect(exitItem, "activate", G_CALLBACK(on_menu_file_quit), NULL);
+    gtk_widget_add_accelerator(exitItem, "activate", accelGroup, GDK_KEY_q, GDK_CONTROL_MASK, GTK_ACCEL_VISIBLE);
     gtk_menu_shell_append(GTK_MENU_SHELL(fileMenu), exitItem);
 
     gtk_menu_shell_append(GTK_MENU_SHELL(menubar), fileItem);
@@ -712,24 +717,29 @@ static GtkWidget *CreateMenuBar(void) {
 
     GtkWidget *undoItem = gtk_menu_item_new_with_mnemonic("_Undo");
     g_signal_connect(undoItem, "activate", G_CALLBACK(on_menu_edit_undo), NULL);
+    gtk_widget_add_accelerator(undoItem, "activate", accelGroup, GDK_KEY_z, GDK_CONTROL_MASK, GTK_ACCEL_VISIBLE);
     gtk_menu_shell_append(GTK_MENU_SHELL(editMenu), undoItem);
 
     GtkWidget *redoItem = gtk_menu_item_new_with_mnemonic("_Redo");
     g_signal_connect(redoItem, "activate", G_CALLBACK(on_menu_edit_redo), NULL);
+    gtk_widget_add_accelerator(redoItem, "activate", accelGroup, GDK_KEY_y, GDK_CONTROL_MASK, GTK_ACCEL_VISIBLE);
     gtk_menu_shell_append(GTK_MENU_SHELL(editMenu), redoItem);
 
     gtk_menu_shell_append(GTK_MENU_SHELL(editMenu), gtk_separator_menu_item_new());
 
     GtkWidget *cutItem = gtk_menu_item_new_with_mnemonic("Cu_t");
     g_signal_connect(cutItem, "activate", G_CALLBACK(on_menu_edit_cut), NULL);
+    gtk_widget_add_accelerator(cutItem, "activate", accelGroup, GDK_KEY_x, GDK_CONTROL_MASK, GTK_ACCEL_VISIBLE);
     gtk_menu_shell_append(GTK_MENU_SHELL(editMenu), cutItem);
 
     GtkWidget *copyItem = gtk_menu_item_new_with_mnemonic("_Copy");
     g_signal_connect(copyItem, "activate", G_CALLBACK(on_menu_edit_copy), NULL);
+    gtk_widget_add_accelerator(copyItem, "activate", accelGroup, GDK_KEY_c, GDK_CONTROL_MASK, GTK_ACCEL_VISIBLE);
     gtk_menu_shell_append(GTK_MENU_SHELL(editMenu), copyItem);
 
     GtkWidget *pasteItem = gtk_menu_item_new_with_mnemonic("_Paste");
     g_signal_connect(pasteItem, "activate", G_CALLBACK(on_menu_edit_paste), NULL);
+    gtk_widget_add_accelerator(pasteItem, "activate", accelGroup, GDK_KEY_v, GDK_CONTROL_MASK, GTK_ACCEL_VISIBLE);
     gtk_menu_shell_append(GTK_MENU_SHELL(editMenu), pasteItem);
 
     GtkWidget *deleteItem = gtk_menu_item_new_with_mnemonic("_Delete");
@@ -740,22 +750,26 @@ static GtkWidget *CreateMenuBar(void) {
 
     GtkWidget *selectAllItem = gtk_menu_item_new_with_mnemonic("Select _All");
     g_signal_connect(selectAllItem, "activate", G_CALLBACK(on_menu_edit_select_all), NULL);
+    gtk_widget_add_accelerator(selectAllItem, "activate", accelGroup, GDK_KEY_a, GDK_CONTROL_MASK, GTK_ACCEL_VISIBLE);
     gtk_menu_shell_append(GTK_MENU_SHELL(editMenu), selectAllItem);
 
     gtk_menu_shell_append(GTK_MENU_SHELL(editMenu), gtk_separator_menu_item_new());
 
     GtkWidget *findItem = gtk_menu_item_new_with_mnemonic("_Find");
     g_signal_connect(findItem, "activate", G_CALLBACK(on_menu_edit_find), NULL);
+    gtk_widget_add_accelerator(findItem, "activate", accelGroup, GDK_KEY_f, GDK_CONTROL_MASK, GTK_ACCEL_VISIBLE);
     gtk_menu_shell_append(GTK_MENU_SHELL(editMenu), findItem);
 
     GtkWidget *replaceItem = gtk_menu_item_new_with_mnemonic("_Replace");
     g_signal_connect(replaceItem, "activate", G_CALLBACK(on_menu_edit_replace), NULL);
+    gtk_widget_add_accelerator(replaceItem, "activate", accelGroup, GDK_KEY_h, GDK_CONTROL_MASK, GTK_ACCEL_VISIBLE);
     gtk_menu_shell_append(GTK_MENU_SHELL(editMenu), replaceItem);
 
     gtk_menu_shell_append(GTK_MENU_SHELL(editMenu), gtk_separator_menu_item_new());
 
     GtkWidget *timeDateItem = gtk_menu_item_new_with_mnemonic("Time/Date");
     g_signal_connect(timeDateItem, "activate", G_CALLBACK(on_menu_edit_time_date), NULL);
+    gtk_widget_add_accelerator(timeDateItem, "activate", accelGroup, GDK_KEY_F5, 0, GTK_ACCEL_VISIBLE);
     gtk_menu_shell_append(GTK_MENU_SHELL(editMenu), timeDateItem);
 
     gtk_menu_shell_append(GTK_MENU_SHELL(menubar), editItem);
@@ -767,6 +781,7 @@ static GtkWidget *CreateMenuBar(void) {
 
     GtkWidget *wordWrapItem = gtk_menu_item_new_with_mnemonic("_Word Wrap");
     g_signal_connect(wordWrapItem, "activate", G_CALLBACK(on_menu_format_word_wrap), NULL);
+    gtk_widget_add_accelerator(wordWrapItem, "activate", accelGroup, GDK_KEY_w, GDK_CONTROL_MASK, GTK_ACCEL_VISIBLE);
     gtk_menu_shell_append(GTK_MENU_SHELL(formatMenu), wordWrapItem);
 
     GtkWidget *fontItem = gtk_menu_item_new_with_mnemonic("_Font");
@@ -810,12 +825,16 @@ int main(int argc, char *argv[]) {
     gtk_window_set_default_size(GTK_WINDOW(g_app.window), DEFAULT_WIDTH, DEFAULT_HEIGHT);
     g_signal_connect(g_app.window, "delete-event", G_CALLBACK(on_window_delete), NULL);
 
+    // Create accelerator group
+    GtkAccelGroup *accelGroup = gtk_accel_group_new();
+    gtk_window_add_accel_group(GTK_WINDOW(g_app.window), accelGroup);
+
     // Create VBox for layout
     GtkWidget *vbox = gtk_box_new(GTK_ORIENTATION_VERTICAL, 0);
     gtk_container_add(GTK_CONTAINER(g_app.window), vbox);
 
     // Create menu bar
-    GtkWidget *menubar = CreateMenuBar();
+    GtkWidget *menubar = CreateMenuBar(accelGroup);
     gtk_box_pack_start(GTK_BOX(vbox), menubar, FALSE, FALSE, 0);
 
     // Create text view with buffer
