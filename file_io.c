@@ -1,10 +1,12 @@
 // Text file load/save helpers with simple BOM detection for retropad.
 #include "file_io.h"
-#include <commdlg.h>
-#include <strsafe.h>
+#include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
+#include <glib.h>
+#include <glib/gstdio.h>
 
-static TextEncoding DetectEncoding(const BYTE *data, DWORD size) {
+static TextEncoding DetectEncoding(const guchar *data, gsize size) {
     if (size >= 2 && data[0] == 0xFF && data[1] == 0xFE) {
         return ENC_UTF16LE;
     }
@@ -14,179 +16,141 @@ static TextEncoding DetectEncoding(const BYTE *data, DWORD size) {
     if (size >= 3 && data[0] == 0xEF && data[1] == 0xBB && data[2] == 0xBF) {
         return ENC_UTF8;
     }
-    // Assume UTF-8 if it converts cleanly, else ANSI
-    int wlen = MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, (LPCSTR)data, size, NULL, 0);
-    return (wlen > 0) ? ENC_UTF8 : ENC_ANSI;
+    // Assume UTF-8 for Linux
+    return ENC_UTF8;
 }
 
-static BOOL DecodeToWide(const BYTE *data, DWORD size, TextEncoding encoding, WCHAR **outText, size_t *outLength) {
-    int chars = 0;
-    WCHAR *buffer = NULL;
+static gboolean DecodeToUTF8(const guchar *data, gsize size, TextEncoding encoding, char **outText, size_t *outLength) {
+    char *result = NULL;
+    GError *error = NULL;
 
     switch (encoding) {
     case ENC_UTF16LE: {
         if (size < 2) return FALSE;
-        DWORD byteOffset = (data[0] == 0xFF && data[1] == 0xFE) ? 2 : 0;
-        DWORD wcharCount = (size - byteOffset) / 2;
-        buffer = (WCHAR *)HeapAlloc(GetProcessHeap(), 0, (wcharCount + 1) * sizeof(WCHAR));
-        if (!buffer) return FALSE;
-        CopyMemory(buffer, data + byteOffset, wcharCount * sizeof(WCHAR));
-        buffer[wcharCount] = L'\0';
-        chars = (int)wcharCount;
+        gsize byteOffset = (data[0] == 0xFF && data[1] == 0xFE) ? 2 : 0;
+        result = g_convert((const gchar *)(data + byteOffset), size - byteOffset,
+                          "UTF-8", "UTF-16LE", NULL, NULL, &error);
         break;
     }
     case ENC_UTF16BE: {
         if (size < 2) return FALSE;
-        DWORD byteOffset = (data[0] == 0xFE && data[1] == 0xFF) ? 2 : 0;
-        DWORD wcharCount = (size - byteOffset) / 2;
-        buffer = (WCHAR *)HeapAlloc(GetProcessHeap(), 0, (wcharCount + 1) * sizeof(WCHAR));
-        if (!buffer) return FALSE;
-        for (DWORD i = 0; i < wcharCount; ++i) {
-            buffer[i] = (WCHAR)((data[byteOffset + i * 2] << 8) | data[byteOffset + i * 2 + 1]);
-        }
-        buffer[wcharCount] = L'\0';
-        chars = (int)wcharCount;
+        gsize byteOffset = (data[0] == 0xFE && data[1] == 0xFF) ? 2 : 0;
+        result = g_convert((const gchar *)(data + byteOffset), size - byteOffset,
+                          "UTF-8", "UTF-16BE", NULL, NULL, &error);
         break;
     }
     case ENC_UTF8: {
-        DWORD byteOffset = (size >= 3 && data[0] == 0xEF && data[1] == 0xBB && data[2] == 0xBF) ? 3 : 0;
-        chars = MultiByteToWideChar(CP_UTF8, 0, (LPCSTR)(data + byteOffset), size - byteOffset, NULL, 0);
-        if (chars <= 0) return FALSE;
-        buffer = (WCHAR *)HeapAlloc(GetProcessHeap(), 0, (chars + 1) * sizeof(WCHAR));
-        if (!buffer) return FALSE;
-        MultiByteToWideChar(CP_UTF8, 0, (LPCSTR)(data + byteOffset), size - byteOffset, buffer, chars);
-        buffer[chars] = L'\0';
+        gsize byteOffset = (size >= 3 && data[0] == 0xEF && data[1] == 0xBB && data[2] == 0xBF) ? 3 : 0;
+        result = g_strndup((const gchar *)(data + byteOffset), size - byteOffset);
         break;
     }
     case ENC_ANSI:
     default: {
-        chars = MultiByteToWideChar(CP_ACP, 0, (LPCSTR)data, size, NULL, 0);
-        if (chars <= 0) return FALSE;
-        buffer = (WCHAR *)HeapAlloc(GetProcessHeap(), 0, (chars + 1) * sizeof(WCHAR));
-        if (!buffer) return FALSE;
-        MultiByteToWideChar(CP_ACP, 0, (LPCSTR)data, size, buffer, chars);
-        buffer[chars] = L'\0';
+        result = g_convert((const gchar *)data, size, "UTF-8", "ISO-8859-1", NULL, NULL, &error);
         break;
     }
     }
 
-    *outText = buffer;
+    if (error) {
+        g_error_free(error);
+        g_free(result);
+        return FALSE;
+    }
+
+    if (!result) return FALSE;
+    *outText = result;
     if (outLength) {
-        *outLength = (size_t)chars;
+        *outLength = strlen(result);
     }
     return TRUE;
 }
 
-BOOL LoadTextFile(HWND owner, LPCWSTR path, WCHAR **textOut, size_t *lengthOut, TextEncoding *encodingOut) {
+gboolean LoadTextFile(void *owner, const char *path, char **textOut, size_t *lengthOut, TextEncoding *encodingOut) {
     *textOut = NULL;
     if (lengthOut) *lengthOut = 0;
     if (encodingOut) *encodingOut = ENC_UTF8;
 
-    HANDLE file = CreateFileW(path, GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
-    if (file == INVALID_HANDLE_VALUE) {
-        MessageBoxW(owner, L"Unable to open file.", L"retropad", MB_ICONERROR);
+    GError *error = NULL;
+    gchar *buffer = NULL;
+    gsize bytes = 0;
+
+    if (!g_file_get_contents(path, &buffer, &bytes, &error)) {
+        g_error_free(error);
         return FALSE;
     }
 
-    LARGE_INTEGER size = {0};
-    if (!GetFileSizeEx(file, &size) || size.QuadPart > (LONGLONG)UINT_MAX) {
-        CloseHandle(file);
-        MessageBoxW(owner, L"Unsupported file size.", L"retropad", MB_ICONERROR);
-        return FALSE;
-    }
-
-    DWORD bytes = (DWORD)size.QuadPart;
-    BYTE *buffer = (BYTE *)HeapAlloc(GetProcessHeap(), 0, bytes + 3);
-    if (!buffer) {
-        CloseHandle(file);
-        MessageBoxW(owner, L"Out of memory.", L"retropad", MB_ICONERROR);
-        return FALSE;
-    }
-
-    DWORD read = 0;
-    BOOL ok = ReadFile(file, buffer, bytes, &read, NULL);
-    CloseHandle(file);
-    if (!ok) {
-        HeapFree(GetProcessHeap(), 0, buffer);
-        MessageBoxW(owner, L"Failed reading file.", L"retropad", MB_ICONERROR);
-        return FALSE;
-    }
-
-    if (read == 0) {
-        WCHAR *empty = (WCHAR *)HeapAlloc(GetProcessHeap(), 0, sizeof(WCHAR));
-        if (!empty) {
-            HeapFree(GetProcessHeap(), 0, buffer);
-            return FALSE;
-        }
-        empty[0] = L'\0';
+    if (bytes == 0) {
+        char *empty = g_strdup("");
         *textOut = empty;
         if (lengthOut) *lengthOut = 0;
         if (encodingOut) *encodingOut = ENC_UTF8;
-        HeapFree(GetProcessHeap(), 0, buffer);
+        g_free(buffer);
         return TRUE;
     }
 
-    TextEncoding enc = DetectEncoding(buffer, read);
-    WCHAR *text = NULL;
+    TextEncoding enc = DetectEncoding((const guchar *)buffer, bytes);
+    char *text = NULL;
     size_t len = 0;
-    if (!DecodeToWide(buffer, read, enc, &text, &len)) {
-        HeapFree(GetProcessHeap(), 0, buffer);
-        MessageBoxW(owner, L"Unable to decode file.", L"retropad", MB_ICONERROR);
+    if (!DecodeToUTF8((const guchar *)buffer, bytes, enc, &text, &len)) {
+        g_free(buffer);
         return FALSE;
     }
 
-    HeapFree(GetProcessHeap(), 0, buffer);
+    g_free(buffer);
     *textOut = text;
     if (lengthOut) *lengthOut = len;
     if (encodingOut) *encodingOut = enc;
     return TRUE;
 }
 
-static BOOL WriteUTF8WithBOM(HANDLE file, const WCHAR *text, size_t length) {
-    static const BYTE bom[] = {0xEF, 0xBB, 0xBF};
-    DWORD written = 0;
-    if (!WriteFile(file, bom, sizeof(bom), &written, NULL)) {
+static gboolean WriteUTF8WithBOM(FILE *file, const char *text, size_t length) {
+    static const guchar bom[] = {0xEF, 0xBB, 0xBF};
+    if (fwrite(bom, sizeof(bom), 1, file) != 1) {
         return FALSE;
     }
-    int bytes = WideCharToMultiByte(CP_UTF8, 0, text, (int)length, NULL, 0, NULL, NULL);
-    if (bytes <= 0) return FALSE;
-    BYTE *buffer = (BYTE *)HeapAlloc(GetProcessHeap(), 0, bytes);
-    if (!buffer) return FALSE;
-    WideCharToMultiByte(CP_UTF8, 0, text, (int)length, (LPSTR)buffer, bytes, NULL, NULL);
-    BOOL ok = WriteFile(file, buffer, bytes, &written, NULL);
-    HeapFree(GetProcessHeap(), 0, buffer);
+    if (fwrite(text, 1, length, file) != length) {
+        return FALSE;
+    }
+    return TRUE;
+}
+
+static gboolean WriteUTF16LE(FILE *file, const char *text, size_t length) {
+    static const guchar bom[] = {0xFF, 0xFE};
+    if (fwrite(bom, sizeof(bom), 1, file) != 1) {
+        return FALSE;
+    }
+    GError *error = NULL;
+    gchar *converted = g_convert(text, length, "UTF-16LE", "UTF-8", NULL, NULL, &error);
+    if (error) {
+        g_error_free(error);
+        return FALSE;
+    }
+    gsize conv_len = strlen(converted);
+    gboolean ok = fwrite(converted, 1, conv_len, file) == conv_len;
+    g_free(converted);
     return ok;
 }
 
-static BOOL WriteUTF16LE(HANDLE file, const WCHAR *text, size_t length) {
-    static const BYTE bom[] = {0xFF, 0xFE};
-    DWORD written = 0;
-    if (!WriteFile(file, bom, sizeof(bom), &written, NULL)) {
+static gboolean WriteANSI(FILE *file, const char *text, size_t length) {
+    GError *error = NULL;
+    gchar *converted = g_convert(text, length, "ISO-8859-1", "UTF-8", NULL, NULL, &error);
+    if (error) {
+        g_error_free(error);
         return FALSE;
     }
-    return WriteFile(file, text, (DWORD)(length * sizeof(WCHAR)), &written, NULL);
-}
-
-static BOOL WriteANSI(HANDLE file, const WCHAR *text, size_t length) {
-    int bytes = WideCharToMultiByte(CP_ACP, 0, text, (int)length, NULL, 0, NULL, NULL);
-    if (bytes <= 0) return FALSE;
-    BYTE *buffer = (BYTE *)HeapAlloc(GetProcessHeap(), 0, bytes);
-    if (!buffer) return FALSE;
-    WideCharToMultiByte(CP_ACP, 0, text, (int)length, (LPSTR)buffer, bytes, NULL, NULL);
-    DWORD written = 0;
-    BOOL ok = WriteFile(file, buffer, bytes, &written, NULL);
-    HeapFree(GetProcessHeap(), 0, buffer);
+    gsize conv_len = strlen(converted);
+    gboolean ok = fwrite(converted, 1, conv_len, file) == conv_len;
+    g_free(converted);
     return ok;
 }
 
-BOOL SaveTextFile(HWND owner, LPCWSTR path, LPCWSTR text, size_t length, TextEncoding encoding) {
-    HANDLE file = CreateFileW(path, GENERIC_WRITE, 0, NULL, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
-    if (file == INVALID_HANDLE_VALUE) {
-        MessageBoxW(owner, L"Unable to create file.", L"retropad", MB_ICONERROR);
+gboolean SaveTextFile(void *owner, const char *path, const char *text, size_t length, TextEncoding encoding) {
+    FILE *file = g_fopen(path, "wb");
+    if (!file) {
         return FALSE;
     }
 
-    BOOL ok = FALSE;
+    gboolean ok = FALSE;
     switch (encoding) {
     case ENC_UTF16LE:
         ok = WriteUTF16LE(file, text, length);
@@ -205,39 +169,6 @@ BOOL SaveTextFile(HWND owner, LPCWSTR path, LPCWSTR text, size_t length, TextEnc
         break;
     }
 
-    CloseHandle(file);
-    if (!ok) {
-        MessageBoxW(owner, L"Failed writing file.", L"retropad", MB_ICONERROR);
-    }
+    fclose(file);
     return ok;
-}
-
-BOOL OpenFileDialog(HWND owner, WCHAR *pathOut, DWORD pathLen) {
-    pathOut[0] = L'\0';
-    OPENFILENAMEW ofn = {0};
-    WCHAR filter[] = L"Text Files (*.txt)\0*.txt\0All Files (*.*)\0*.*\0\0";
-    ofn.lStructSize = sizeof(ofn);
-    ofn.hwndOwner = owner;
-    ofn.lpstrFilter = filter;
-    ofn.lpstrFile = pathOut;
-    ofn.nMaxFile = pathLen;
-    ofn.Flags = OFN_FILEMUSTEXIST | OFN_HIDEREADONLY | OFN_PATHMUSTEXIST;
-    ofn.lpstrDefExt = L"txt";
-    return GetOpenFileNameW(&ofn);
-}
-
-BOOL SaveFileDialog(HWND owner, WCHAR *pathOut, DWORD pathLen) {
-    OPENFILENAMEW ofn = {0};
-    WCHAR filter[] = L"Text Files (*.txt)\0*.txt\0All Files (*.*)\0*.*\0\0";
-    ofn.lStructSize = sizeof(ofn);
-    ofn.hwndOwner = owner;
-    ofn.lpstrFilter = filter;
-    ofn.lpstrFile = pathOut;
-    ofn.nMaxFile = pathLen;
-    ofn.Flags = OFN_OVERWRITEPROMPT | OFN_PATHMUSTEXIST;
-    ofn.lpstrDefExt = L"txt";
-    if (pathOut[0] == L'\0') {
-        StringCchCopyW(pathOut, pathLen, L"*.txt");
-    }
-    return GetSaveFileNameW(&ofn);
 }

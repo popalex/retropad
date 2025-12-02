@@ -1,815 +1,768 @@
-// retropad - a Petzold-style Win32 notepad clone implemented in mostly plain C.
-// Keeps the classic menus/accelerators, word wrap, status bar, find/replace,
-// font picker, and basic file load/save with BOM detection.
-#include <windows.h>
-#include <commdlg.h>
-#include <commctrl.h>
-#include <shellapi.h>
-#include <strsafe.h>
-#include "resource.h"
+#include <gtk/gtk.h>
+#include <glib/gstdio.h>
+#include <string.h>
+#include <time.h>
 #include "file_io.h"
 
-#define APP_TITLE      L"retropad"
-#define UNTITLED_NAME  L"Untitled"
+#define APP_TITLE "retropad"
+#define UNTITLED_NAME "Untitled"
 #define MAX_PATH_BUFFER 1024
-#define DEFAULT_WIDTH  640
+#define DEFAULT_WIDTH 640
 #define DEFAULT_HEIGHT 480
 
 typedef struct AppState {
-    HWND hwndMain;
-    HWND hwndEdit;
-    HWND hwndStatus;
-    HFONT hFont;
-    WCHAR currentPath[MAX_PATH_BUFFER];
-    BOOL wordWrap;
-    BOOL statusVisible;
-    BOOL statusBeforeWrap;
-    BOOL modified;
+    GtkWidget *window;
+    GtkWidget *textView;
+    GtkWidget *statusbar;
+    GtkTextBuffer *textBuffer;
+    PangoFontDescription *fontDesc;
+    char currentPath[MAX_PATH_BUFFER];
+    gboolean wordWrap;
+    gboolean statusVisible;
+    gboolean modified;
     TextEncoding encoding;
-    FINDREPLACEW find;
-    HWND hFindDlg;
-    HWND hReplaceDlg;
-    UINT findFlags;
-    WCHAR findText[128];
-    WCHAR replaceText[128];
+    GtkWidget *findBar;
+    GtkWidget *findEntry;
+    GtkWidget *replaceBar;
+    GtkWidget *replaceEntry;
+    gboolean matchCase;
+    gboolean searchDown;
 } AppState;
 
 static AppState g_app = {0};
-static HINSTANCE g_hInst = NULL;
-static UINT g_findMsg = 0;
+static guint g_statusbar_context = 0;
 
-static void UpdateTitle(HWND hwnd);
-static void CreateEditControl(HWND hwnd);
-static void UpdateLayout(HWND hwnd);
-static BOOL PromptSaveChanges(HWND hwnd);
-static BOOL DoFileOpen(HWND hwnd);
-static BOOL DoFileSave(HWND hwnd, BOOL saveAs);
-static void DoFileNew(HWND hwnd);
-static void SetWordWrap(HWND hwnd, BOOL enabled);
-static void ToggleStatusBar(HWND hwnd, BOOL visible);
-static void UpdateStatusBar(HWND hwnd);
-static void ShowFindDialog(HWND hwnd);
-static void ShowReplaceDialog(HWND hwnd);
-static BOOL DoFindNext(BOOL reverse);
-static void DoSelectFont(HWND hwnd);
-static void InsertTimeDate(HWND hwnd);
-static void HandleFindReplace(LPFINDREPLACE lpfr);
-static BOOL LoadDocumentFromPath(HWND hwnd, LPCWSTR path);
-static INT_PTR CALLBACK GoToDlgProc(HWND dlg, UINT msg, WPARAM wParam, LPARAM lParam);
-static INT_PTR CALLBACK AboutDlgProc(HWND dlg, UINT msg, WPARAM wParam, LPARAM lParam);
+static void UpdateTitle(void);
+static void UpdateStatusBar(void);
+static gboolean PromptSaveChanges(void);
+static void DoFileNew(void);
+static void DoFileOpen(void);
+static gboolean DoFileSave(gboolean saveAs);
+static void SetWordWrap(gboolean enabled);
+static void ToggleStatusBar(gboolean visible);
+static void ShowFindBar(void);
+static void ShowReplaceBar(void);
+static gboolean DoFindNext(gboolean reverse);
+static void DoSelectFont(void);
+static void InsertTimeDate(void);
+static gboolean LoadDocumentFromPath(const char *path);
 
-static BOOL GetEditText(HWND hwndEdit, WCHAR **bufferOut, int *lengthOut) {
-    int length = GetWindowTextLengthW(hwndEdit);
-    WCHAR *buffer = (WCHAR *)HeapAlloc(GetProcessHeap(), 0, (length + 1) * sizeof(WCHAR));
-    if (!buffer) return FALSE;
-    GetWindowTextW(hwndEdit, buffer, length + 1);
-    if (lengthOut) *lengthOut = length;
-    *bufferOut = buffer;
+static void UpdateTitle(void) {
+    char name[MAX_PATH_BUFFER];
+    if (g_app.currentPath[0]) {
+        const char *fileName = g_app.currentPath;
+        const char *slash = strrchr(g_app.currentPath, '/');
+        if (slash) fileName = slash + 1;
+        strncpy(name, fileName, MAX_PATH_BUFFER - 1);
+    } else {
+        strncpy(name, UNTITLED_NAME, MAX_PATH_BUFFER - 1);
+    }
+    name[MAX_PATH_BUFFER - 1] = '\0';
+
+    char title[MAX_PATH_BUFFER + 32];
+    snprintf(title, sizeof(title), "%s%s - %s",
+             (g_app.modified ? "*" : ""), name, APP_TITLE);
+    gtk_window_set_title(GTK_WINDOW(g_app.window), title);
+}
+
+static void UpdateStatusBar(void) {
+    if (!g_app.statusVisible) return;
+
+    GtkTextIter start, end;
+    gtk_text_buffer_get_bounds(g_app.textBuffer, &start, &end);
+    gint totalLines = gtk_text_iter_get_line(&end) + 1;
+
+    GtkTextIter cursor;
+    gtk_text_buffer_get_iter_at_mark(g_app.textBuffer,
+        &cursor, gtk_text_buffer_get_insert(g_app.textBuffer));
+    gint line = gtk_text_iter_get_line(&cursor) + 1;
+    gint col = gtk_text_iter_get_line_offset(&cursor) + 1;
+
+    char status[128];
+    snprintf(status, sizeof(status), "Ln %d, Col %d    Lines: %d",
+             line, col, totalLines);
+
+    gtk_statusbar_pop(GTK_STATUSBAR(g_app.statusbar), g_statusbar_context);
+    gtk_statusbar_push(GTK_STATUSBAR(g_app.statusbar), g_statusbar_context, status);
+}
+
+static gboolean GetEditText(char **bufferOut, int *lengthOut) {
+    GtkTextIter start, end;
+    gtk_text_buffer_get_bounds(g_app.textBuffer, &start, &end);
+    char *text = gtk_text_buffer_get_text(g_app.textBuffer, &start, &end, FALSE);
+    if (!text) return FALSE;
+
+    int len = strlen(text);
+    if (lengthOut) *lengthOut = len;
+    *bufferOut = text;
     return TRUE;
 }
 
-static BOOL FindInEdit(HWND hwndEdit, const WCHAR *needle, BOOL matchCase, BOOL searchDown, DWORD startPos, DWORD *outStart, DWORD *outEnd) {
-    if (!needle || needle[0] == L'\0') return FALSE;
+static gboolean FindInEdit(const char *needle, gboolean matchCase, gboolean searchDown,
+                          GtkTextIter *outStart, GtkTextIter *outEnd) {
+    if (!needle || needle[0] == '\0') return FALSE;
 
-    WCHAR *text = NULL;
+    char *text = NULL;
     int len = 0;
-    if (!GetEditText(hwndEdit, &text, &len)) return FALSE;
+    if (!GetEditText(&text, &len)) return FALSE;
 
-    size_t needleLen = wcslen(needle);
-    WCHAR *haystack = text;
-    WCHAR *needleBuf = (WCHAR *)HeapAlloc(GetProcessHeap(), 0, (needleLen + 1) * sizeof(WCHAR));
-    if (!needleBuf) {
-        HeapFree(GetProcessHeap(), 0, text);
-        return FALSE;
-    }
-    StringCchCopyW(needleBuf, needleLen + 1, needle);
+    char *haystack = text;
+    char *needleBuf = g_strdup(needle);
 
     if (!matchCase) {
-        CharLowerBuffW(haystack, len);
-        CharLowerBuffW(needleBuf, (DWORD)needleLen);
-    }
-
-    if (startPos > (DWORD)len) startPos = (DWORD)len;
-
-    WCHAR *found = NULL;
-    if (searchDown) {
-        found = wcsstr(haystack + startPos, needleBuf);
-        if (!found && startPos > 0) {
-            found = wcsstr(haystack, needleBuf);
+        char *p = haystack;
+        while (*p) {
+            *p = g_ascii_tolower(*p);
+            p++;
         }
-    } else {
-        WCHAR *p = haystack;
-        while ((p = wcsstr(p, needleBuf)) != NULL) {
-            DWORD idx = (DWORD)(p - haystack);
-            if (idx < startPos) {
-                found = p;
-                p++;
-            } else {
-                break;
-            }
-        }
-        if (!found && startPos < (DWORD)len) {
-            p = haystack + startPos;
-            while ((p = wcsstr(p, needleBuf)) != NULL) {
-                found = p;
-                p++;
-            }
+        p = needleBuf;
+        while (*p) {
+            *p = g_ascii_tolower(*p);
+            p++;
         }
     }
 
-    BOOL result = FALSE;
+    GtkTextIter cursor;
+    gtk_text_buffer_get_iter_at_mark(g_app.textBuffer,
+        &cursor, gtk_text_buffer_get_insert(g_app.textBuffer));
+    gint searchPos = gtk_text_iter_get_offset(&cursor);
+    if (!searchDown) searchPos = 0;
+
+    char *found = strstr(haystack + searchPos, needleBuf);
+    if (!found && searchDown) {
+        found = strstr(haystack, needleBuf);
+    }
+
+    gboolean result = FALSE;
     if (found) {
-        DWORD pos = (DWORD)(found - haystack);
-        *outStart = pos;
-        *outEnd = pos + (DWORD)needleLen;
+        gint pos = found - haystack;
+        gtk_text_buffer_get_iter_at_offset(g_app.textBuffer, outStart, pos);
+        gtk_text_buffer_get_iter_at_offset(g_app.textBuffer, outEnd,
+                                          pos + strlen(needle));
         result = TRUE;
     }
 
-    HeapFree(GetProcessHeap(), 0, text);
-    HeapFree(GetProcessHeap(), 0, needleBuf);
+    g_free(text);
+    g_free(needleBuf);
     return result;
 }
 
-static int ReplaceAllOccurrences(HWND hwndEdit, const WCHAR *needle, const WCHAR *replacement, BOOL matchCase) {
-    if (!needle || needle[0] == L'\0') return 0;
+static int ReplaceAllOccurrences(const char *needle, const char *replacement,
+                                gboolean matchCase) {
+    if (!needle || needle[0] == '\0') return 0;
 
-    WCHAR *text = NULL;
+    char *text = NULL;
     int len = 0;
-    if (!GetEditText(hwndEdit, &text, &len)) return 0;
+    if (!GetEditText(&text, &len)) return 0;
 
-    size_t needleLen = wcslen(needle);
-    size_t replLen = replacement ? wcslen(replacement) : 0;
-
-    WCHAR *searchBuf = (WCHAR *)HeapAlloc(GetProcessHeap(), 0, (len + 1) * sizeof(WCHAR));
-    WCHAR *needleBuf = (WCHAR *)HeapAlloc(GetProcessHeap(), 0, (needleLen + 1) * sizeof(WCHAR));
-    if (!searchBuf || !needleBuf) {
-        HeapFree(GetProcessHeap(), 0, text);
-        if (searchBuf) HeapFree(GetProcessHeap(), 0, searchBuf);
-        if (needleBuf) HeapFree(GetProcessHeap(), 0, needleBuf);
-        return 0;
-    }
-    StringCchCopyW(searchBuf, len + 1, text);
-    StringCchCopyW(needleBuf, needleLen + 1, needle);
+    char *searchBuf = g_strdup(text);
+    char *needleBuf = g_strdup(needle);
 
     if (!matchCase) {
-        CharLowerBuffW(searchBuf, len);
-        CharLowerBuffW(needleBuf, (DWORD)needleLen);
+        char *p = searchBuf;
+        while (*p) {
+            *p = g_ascii_tolower(*p);
+            p++;
+        }
+        p = needleBuf;
+        while (*p) {
+            *p = g_ascii_tolower(*p);
+            p++;
+        }
     }
 
     int count = 0;
-    WCHAR *p = searchBuf;
-    while ((p = wcsstr(p, needleBuf)) != NULL) {
+    char *p = searchBuf;
+    while ((p = strstr(p, needleBuf)) != NULL) {
         count++;
-        p += needleLen;
+        p += strlen(needle);
     }
+
     if (count == 0) {
-        HeapFree(GetProcessHeap(), 0, text);
-        HeapFree(GetProcessHeap(), 0, searchBuf);
-        HeapFree(GetProcessHeap(), 0, needleBuf);
+        g_free(text);
+        g_free(searchBuf);
+        g_free(needleBuf);
         return 0;
     }
 
-    size_t newLen = (size_t)len - (size_t)count * needleLen + (size_t)count * replLen;
-    WCHAR *result = (WCHAR *)HeapAlloc(GetProcessHeap(), 0, (newLen + 1) * sizeof(WCHAR));
-    if (!result) {
-        HeapFree(GetProcessHeap(), 0, text);
-        HeapFree(GetProcessHeap(), 0, searchBuf);
-        HeapFree(GetProcessHeap(), 0, needleBuf);
-        return 0;
-    }
-
-    WCHAR *dst = result;
-    WCHAR *searchCur = searchBuf;
-    WCHAR *origCur = text;
-    while ((p = wcsstr(searchCur, needleBuf)) != NULL) {
-        size_t delta = (size_t)(p - searchCur);
-        CopyMemory(dst, origCur, delta * sizeof(WCHAR));
-        dst += delta;
-        origCur += delta;
-        searchCur += delta;
-
-        if (replLen) {
-            CopyMemory(dst, replacement, replLen * sizeof(WCHAR));
-            dst += replLen;
+    GString *result = g_string_new("");
+    p = searchBuf;
+    const char *orig = text;
+    
+    while ((p = strstr(p, needleBuf)) != NULL) {
+        int delta = p - searchBuf;
+        g_string_append_len(result, orig, delta);
+        if (replacement) {
+            g_string_append(result, replacement);
         }
-        origCur += needleLen;
-        searchCur += needleLen;
+        orig += delta + strlen(needle);
+        searchBuf += delta + strlen(needleBuf);
     }
-    size_t tail = wcslen(origCur);
-    CopyMemory(dst, origCur, tail * sizeof(WCHAR));
-    dst += tail;
-    *dst = L'\0';
+    g_string_append(result, orig);
 
-    SetWindowTextW(hwndEdit, result);
-    HeapFree(GetProcessHeap(), 0, text);
-    HeapFree(GetProcessHeap(), 0, searchBuf);
-    HeapFree(GetProcessHeap(), 0, needleBuf);
-    HeapFree(GetProcessHeap(), 0, result);
-    SendMessageW(hwndEdit, EM_SETMODIFY, TRUE, 0);
+    gtk_text_buffer_set_text(g_app.textBuffer, result->str, -1);
+    g_string_free(result, TRUE);
+    g_free(text);
+    g_free(searchBuf);
+    g_free(needleBuf);
+    
     g_app.modified = TRUE;
-    UpdateTitle(g_app.hwndMain);
+    UpdateTitle();
     return count;
 }
 
-static void UpdateTitle(HWND hwnd) {
-    WCHAR name[MAX_PATH_BUFFER];
-    if (g_app.currentPath[0]) {
-        WCHAR *fileName = wcsrchr(g_app.currentPath, L'\\');
-        fileName = fileName ? fileName + 1 : g_app.currentPath;
-        StringCchCopyW(name, MAX_PATH_BUFFER, fileName);
-    } else {
-        StringCchCopyW(name, MAX_PATH_BUFFER, UNTITLED_NAME);
-    }
-
-    WCHAR title[MAX_PATH_BUFFER + 32];
-    StringCchPrintfW(title, ARRAYSIZE(title), L"%s%s - %s", (g_app.modified ? L"*" : L""), name, APP_TITLE);
-    SetWindowTextW(hwnd, title);
-}
-
-static void ApplyFontToEdit(HWND hwndEdit, HFONT font) {
-    SendMessageW(hwndEdit, WM_SETFONT, (WPARAM)font, TRUE);
-}
-
-static void CreateEditControl(HWND hwnd) {
-    if (g_app.hwndEdit) {
-        DestroyWindow(g_app.hwndEdit);
-    }
-
-    DWORD style = WS_CHILD | WS_VISIBLE | WS_VSCROLL | ES_MULTILINE | ES_AUTOVSCROLL | ES_WANTRETURN | ES_NOHIDESEL;
-    if (!g_app.wordWrap) {
-        style |= WS_HSCROLL | ES_AUTOHSCROLL;
-    }
-
-    g_app.hwndEdit = CreateWindowExW(WS_EX_CLIENTEDGE, L"EDIT", NULL, style, 0, 0, 0, 0, hwnd, (HMENU)1, g_hInst, NULL);
-    if (g_app.hwndEdit && g_app.hFont) {
-        ApplyFontToEdit(g_app.hwndEdit, g_app.hFont);
-    }
-    SendMessageW(g_app.hwndEdit, EM_SETLIMITTEXT, 0, 0); // allow large files
-    UpdateLayout(hwnd);
-}
-
-static void ToggleStatusBar(HWND hwnd, BOOL visible) {
-    g_app.statusVisible = visible;
-    if (visible) {
-        if (!g_app.hwndStatus) {
-            g_app.hwndStatus = CreateStatusWindowW(WS_CHILD | SBARS_SIZEGRIP, L"", hwnd, 2);
-        }
-        ShowWindow(g_app.hwndStatus, SW_SHOW);
-    } else if (g_app.hwndStatus) {
-        ShowWindow(g_app.hwndStatus, SW_HIDE);
-    }
-    UpdateLayout(hwnd);
-    UpdateStatusBar(hwnd);
-}
-
-static void UpdateLayout(HWND hwnd) {
-    RECT rc;
-    GetClientRect(hwnd, &rc);
-
-    int statusHeight = 0;
-    if (g_app.statusVisible && g_app.hwndStatus) {
-        SendMessageW(g_app.hwndStatus, WM_SIZE, 0, 0);
-        RECT sbrc;
-        GetWindowRect(g_app.hwndStatus, &sbrc);
-        statusHeight = sbrc.bottom - sbrc.top;
-        MoveWindow(g_app.hwndStatus, 0, rc.bottom - statusHeight, rc.right, statusHeight, TRUE);
-    }
-
-    if (g_app.hwndEdit) {
-        MoveWindow(g_app.hwndEdit, 0, 0, rc.right, rc.bottom - statusHeight, TRUE);
-    }
-}
-
-static BOOL PromptSaveChanges(HWND hwnd) {
-    if (!g_app.modified) return TRUE;
-
-    WCHAR prompt[MAX_PATH_BUFFER + 64];
-    const WCHAR *name = g_app.currentPath[0] ? g_app.currentPath : UNTITLED_NAME;
-    StringCchPrintfW(prompt, ARRAYSIZE(prompt), L"Do you want to save changes to %s?", name);
-    int res = MessageBoxW(hwnd, prompt, APP_TITLE, MB_ICONQUESTION | MB_YESNOCANCEL);
-    if (res == IDYES) {
-        return DoFileSave(hwnd, FALSE);
-    }
-    return res == IDNO;
-}
-
-static BOOL LoadDocumentFromPath(HWND hwnd, LPCWSTR path) {
-    WCHAR *text = NULL;
-    TextEncoding enc = ENC_UTF8;
-    if (!LoadTextFile(hwnd, path, &text, NULL, &enc)) {
-        return FALSE;
-    }
-
-    SetWindowTextW(g_app.hwndEdit, text);
-    HeapFree(GetProcessHeap(), 0, text);
-    StringCchCopyW(g_app.currentPath, ARRAYSIZE(g_app.currentPath), path);
-    g_app.encoding = enc;
-    SendMessageW(g_app.hwndEdit, EM_SETMODIFY, FALSE, 0);
+static void DoFileNew(void) {
+    if (!PromptSaveChanges()) return;
+    gtk_text_buffer_set_text(g_app.textBuffer, "", -1);
+    g_app.currentPath[0] = '\0';
+    g_app.encoding = ENC_UTF8;
     g_app.modified = FALSE;
-    UpdateTitle(hwnd);
-    UpdateStatusBar(hwnd);
-    return TRUE;
+    UpdateTitle();
+    UpdateStatusBar();
 }
 
-static BOOL DoFileOpen(HWND hwnd) {
-    if (!PromptSaveChanges(hwnd)) return FALSE;
+static void DoFileOpen(void) {
+    if (!PromptSaveChanges()) return;
 
-    WCHAR path[MAX_PATH_BUFFER] = L"";
-    if (!OpenFileDialog(hwnd, path, ARRAYSIZE(path))) {
-        return FALSE;
-    }
-    return LoadDocumentFromPath(hwnd, path);
-}
+    GtkWidget *dialog = gtk_file_chooser_dialog_new(
+        "Open File", GTK_WINDOW(g_app.window),
+        GTK_FILE_CHOOSER_ACTION_OPEN,
+        "_Cancel", GTK_RESPONSE_CANCEL,
+        "_Open", GTK_RESPONSE_ACCEPT,
+        NULL);
 
-static BOOL DoFileSave(HWND hwnd, BOOL saveAs) {
-    WCHAR path[MAX_PATH_BUFFER];
-    if (saveAs || g_app.currentPath[0] == L'\0') {
-        path[0] = L'\0';
-        if (g_app.currentPath[0]) {
-            StringCchCopyW(path, ARRAYSIZE(path), g_app.currentPath);
+    if (gtk_dialog_run(GTK_DIALOG(dialog)) == GTK_RESPONSE_ACCEPT) {
+        char *path = gtk_file_chooser_get_filename(GTK_FILE_CHOOSER(dialog));
+        if (path) {
+            LoadDocumentFromPath(path);
+            g_free(path);
         }
-        if (!SaveFileDialog(hwnd, path, ARRAYSIZE(path))) {
+    }
+    gtk_widget_destroy(dialog);
+}
+
+static gboolean DoFileSave(gboolean saveAs) {
+    char path[MAX_PATH_BUFFER];
+
+    if (saveAs || g_app.currentPath[0] == '\0') {
+        GtkWidget *dialog = gtk_file_chooser_dialog_new(
+            "Save File", GTK_WINDOW(g_app.window),
+            GTK_FILE_CHOOSER_ACTION_SAVE,
+            "_Cancel", GTK_RESPONSE_CANCEL,
+            "_Save", GTK_RESPONSE_ACCEPT,
+            NULL);
+
+        gtk_file_chooser_set_do_overwrite_confirmation(GTK_FILE_CHOOSER(dialog), TRUE);
+
+        if (gtk_dialog_run(GTK_DIALOG(dialog)) == GTK_RESPONSE_ACCEPT) {
+            char *filename = gtk_file_chooser_get_filename(GTK_FILE_CHOOSER(dialog));
+            if (filename) {
+                strncpy(path, filename, MAX_PATH_BUFFER - 1);
+                g_free(filename);
+            } else {
+                gtk_widget_destroy(dialog);
+                return FALSE;
+            }
+        } else {
+            gtk_widget_destroy(dialog);
             return FALSE;
         }
-        StringCchCopyW(g_app.currentPath, ARRAYSIZE(g_app.currentPath), path);
+        gtk_widget_destroy(dialog);
+        strncpy(g_app.currentPath, path, MAX_PATH_BUFFER - 1);
     } else {
-        StringCchCopyW(path, ARRAYSIZE(path), g_app.currentPath);
+        strncpy(path, g_app.currentPath, MAX_PATH_BUFFER - 1);
     }
 
-    int len = GetWindowTextLengthW(g_app.hwndEdit);
-    WCHAR *buffer = (WCHAR *)HeapAlloc(GetProcessHeap(), 0, (len + 1) * sizeof(WCHAR));
-    if (!buffer) return FALSE;
-    GetWindowTextW(g_app.hwndEdit, buffer, len + 1);
+    char *text = NULL;
+    int len = 0;
+    if (!GetEditText(&text, &len)) return FALSE;
 
-    BOOL ok = SaveTextFile(hwnd, path, buffer, len, g_app.encoding);
-    HeapFree(GetProcessHeap(), 0, buffer);
+    gboolean ok = SaveTextFile(NULL, path, text, len, g_app.encoding);
+    g_free(text);
+
     if (ok) {
-        SendMessageW(g_app.hwndEdit, EM_SETMODIFY, FALSE, 0);
         g_app.modified = FALSE;
-        UpdateTitle(hwnd);
+        UpdateTitle();
     }
     return ok;
 }
 
-static void DoFileNew(HWND hwnd) {
-    if (!PromptSaveChanges(hwnd)) return;
-    SetWindowTextW(g_app.hwndEdit, L"");
-    g_app.currentPath[0] = L'\0';
-    g_app.encoding = ENC_UTF8;
-    SendMessageW(g_app.hwndEdit, EM_SETMODIFY, FALSE, 0);
-    g_app.modified = FALSE;
-    UpdateTitle(hwnd);
-    UpdateStatusBar(hwnd);
-}
-
-static void SetWordWrap(HWND hwnd, BOOL enabled) {
-    if (g_app.wordWrap == enabled) return;
-    g_app.wordWrap = enabled;
-    HWND edit = g_app.hwndEdit;
-    WCHAR *text = NULL;
-    int len = 0;
-    if (!GetEditText(edit, &text, &len)) {
-        return;
-    }
-    DWORD start = 0, end = 0;
-    SendMessageW(edit, EM_GETSEL, (WPARAM)&start, (LPARAM)&end);
-
-    CreateEditControl(hwnd);
-    SetWindowTextW(g_app.hwndEdit, text);
-    SendMessageW(g_app.hwndEdit, EM_SETSEL, start, end);
-    HeapFree(GetProcessHeap(), 0, text);
-
-    if (enabled) {
-        g_app.statusBeforeWrap = g_app.statusVisible;
-        ToggleStatusBar(hwnd, FALSE);
-        EnableMenuItem(GetMenu(hwnd), IDM_VIEW_STATUS_BAR, MF_BYCOMMAND | MF_GRAYED);
-        EnableMenuItem(GetMenu(hwnd), IDM_EDIT_GOTO, MF_BYCOMMAND | MF_GRAYED);
-    } else {
-        ToggleStatusBar(hwnd, g_app.statusBeforeWrap);
-        EnableMenuItem(GetMenu(hwnd), IDM_VIEW_STATUS_BAR, MF_BYCOMMAND | MF_ENABLED);
-        EnableMenuItem(GetMenu(hwnd), IDM_EDIT_GOTO, MF_BYCOMMAND | MF_ENABLED);
-    }
-    UpdateTitle(hwnd);
-    UpdateStatusBar(hwnd);
-}
-
-static void UpdateStatusBar(HWND hwnd) {
-    if (!g_app.statusVisible || !g_app.hwndStatus) return;
-    DWORD selStart = 0, selEnd = 0;
-    SendMessageW(g_app.hwndEdit, EM_GETSEL, (WPARAM)&selStart, (LPARAM)&selEnd);
-    int line = (int)SendMessageW(g_app.hwndEdit, EM_LINEFROMCHAR, selStart, 0) + 1;
-    int col = (int)(selStart - SendMessageW(g_app.hwndEdit, EM_LINEINDEX, line - 1, 0)) + 1;
-    int lines = (int)SendMessageW(g_app.hwndEdit, EM_GETLINECOUNT, 0, 0);
-
-    WCHAR status[128];
-    StringCchPrintfW(status, ARRAYSIZE(status), L"Ln %d, Col %d    Lines: %d", line, col, lines);
-    SendMessageW(g_app.hwndStatus, SB_SETTEXT, 0, (LPARAM)status);
-}
-
-static void ShowFindDialog(HWND hwnd) {
-    if (g_app.hFindDlg) {
-        SetForegroundWindow(g_app.hFindDlg);
-        return;
-    }
-
-    ZeroMemory(&g_app.find, sizeof(g_app.find));
-    g_app.find.lStructSize = sizeof(FINDREPLACEW);
-    g_app.find.hwndOwner = hwnd;
-    g_app.find.lpstrFindWhat = g_app.findText;
-    g_app.find.wFindWhatLen = ARRAYSIZE(g_app.findText);
-    g_app.find.Flags = g_app.findFlags;
-
-    g_app.hFindDlg = FindTextW(&g_app.find);
-}
-
-static void ShowReplaceDialog(HWND hwnd) {
-    if (g_app.hReplaceDlg) {
-        SetForegroundWindow(g_app.hReplaceDlg);
-        return;
-    }
-
-    ZeroMemory(&g_app.find, sizeof(g_app.find));
-    g_app.find.lStructSize = sizeof(FINDREPLACEW);
-    g_app.find.hwndOwner = hwnd;
-    g_app.find.lpstrFindWhat = g_app.findText;
-    g_app.find.lpstrReplaceWith = g_app.replaceText;
-    g_app.find.wFindWhatLen = ARRAYSIZE(g_app.findText);
-    g_app.find.wReplaceWithLen = ARRAYSIZE(g_app.replaceText);
-    g_app.find.Flags = g_app.findFlags;
-
-    g_app.hReplaceDlg = ReplaceTextW(&g_app.find);
-}
-
-static BOOL DoFindNext(BOOL reverse) {
-    if (g_app.findText[0] == L'\0') {
-        ShowFindDialog(g_app.hwndMain);
+static gboolean LoadDocumentFromPath(const char *path) {
+    char *text = NULL;
+    TextEncoding enc = ENC_UTF8;
+    if (!LoadTextFile(NULL, path, &text, NULL, &enc)) {
         return FALSE;
     }
 
-    DWORD start = 0, end = 0;
-    SendMessageW(g_app.hwndEdit, EM_GETSEL, (WPARAM)&start, (LPARAM)&end);
-    BOOL matchCase = (g_app.findFlags & FR_MATCHCASE) != 0;
-    BOOL down = (g_app.findFlags & FR_DOWN) != 0;
-    if (reverse) down = !down;
-    DWORD searchStart = down ? end : start;
-    DWORD outStart = 0, outEnd = 0;
-    if (FindInEdit(g_app.hwndEdit, g_app.findText, matchCase, down, searchStart, &outStart, &outEnd)) {
-        SendMessageW(g_app.hwndEdit, EM_SETSEL, outStart, outEnd);
-        SendMessageW(g_app.hwndEdit, EM_SCROLLCARET, 0, 0);
-        return TRUE;
-    }
-    MessageBoxW(g_app.hwndMain, L"Cannot find the text.", APP_TITLE, MB_ICONINFORMATION);
-    return FALSE;
+    gtk_text_buffer_set_text(g_app.textBuffer, text, -1);
+    g_free(text);
+    strncpy(g_app.currentPath, path, MAX_PATH_BUFFER - 1);
+    g_app.encoding = enc;
+    g_app.modified = FALSE;
+    UpdateTitle();
+    UpdateStatusBar();
+    return TRUE;
 }
 
-static INT_PTR CALLBACK GoToDlgProc(HWND dlg, UINT msg, WPARAM wParam, LPARAM lParam) {
-    switch (msg) {
-    case WM_INITDIALOG: {
-        SetDlgItemInt(dlg, IDC_GOTO_EDIT, 1, FALSE);
-        HWND edit = GetDlgItem(dlg, IDC_GOTO_EDIT);
-        SendMessageW(edit, EM_SETLIMITTEXT, 10, 0);
-        return TRUE;
+static gboolean PromptSaveChanges(void) {
+    if (!g_app.modified) return TRUE;
+
+    GtkWidget *dialog = gtk_message_dialog_new(
+        GTK_WINDOW(g_app.window),
+        GTK_DIALOG_MODAL,
+        GTK_MESSAGE_QUESTION,
+        GTK_BUTTONS_NONE,
+        "Save changes to %s?",
+        g_app.currentPath[0] ? g_app.currentPath : UNTITLED_NAME);
+
+    gtk_dialog_add_buttons(GTK_DIALOG(dialog),
+        "_Don't Save", GTK_RESPONSE_NO,
+        "_Cancel", GTK_RESPONSE_CANCEL,
+        "_Save", GTK_RESPONSE_YES,
+        NULL);
+
+    gint res = gtk_dialog_run(GTK_DIALOG(dialog));
+    gtk_widget_destroy(dialog);
+
+    if (res == GTK_RESPONSE_YES) {
+        return DoFileSave(FALSE);
     }
-    case WM_COMMAND:
-        switch (LOWORD(wParam)) {
-        case IDOK: {
-            BOOL ok = FALSE;
-            UINT line = GetDlgItemInt(dlg, IDC_GOTO_EDIT, &ok, FALSE);
-            if (!ok || line == 0) {
-                MessageBoxW(dlg, L"Enter a valid line number.", APP_TITLE, MB_ICONWARNING);
-                return TRUE;
-            }
-            int maxLine = (int)SendMessageW(g_app.hwndEdit, EM_GETLINECOUNT, 0, 0);
-            if ((int)line > maxLine) line = (UINT)maxLine;
-            int charIndex = (int)SendMessageW(g_app.hwndEdit, EM_LINEINDEX, line - 1, 0);
-            if (charIndex >= 0) {
-                SendMessageW(g_app.hwndEdit, EM_SETSEL, charIndex, charIndex);
-                SendMessageW(g_app.hwndEdit, EM_SCROLLCARET, 0, 0);
-            }
-            EndDialog(dlg, IDOK);
-            return TRUE;
-        }
-        case IDCANCEL:
-            EndDialog(dlg, IDCANCEL);
-            return TRUE;
-        }
-        break;
-    }
-    return FALSE;
+    return res == GTK_RESPONSE_NO;
 }
 
-static void DoSelectFont(HWND hwnd) {
-    LOGFONTW lf = {0};
-    if (g_app.hFont) {
-        GetObjectW(g_app.hFont, sizeof(LOGFONTW), &lf);
+static void SetWordWrap(gboolean enabled) {
+    if (g_app.wordWrap == enabled) return;
+    g_app.wordWrap = enabled;
+
+    if (enabled) {
+        gtk_text_view_set_wrap_mode(GTK_TEXT_VIEW(g_app.textView), GTK_WRAP_WORD);
     } else {
-        SystemParametersInfoW(SPI_GETICONTITLELOGFONT, sizeof(LOGFONTW), &lf, 0);
-    }
-
-    CHOOSEFONTW cf = {0};
-    cf.lStructSize = sizeof(cf);
-    cf.hwndOwner = hwnd;
-    cf.lpLogFont = &lf;
-    cf.Flags = CF_SCREENFONTS | CF_INITTOLOGFONTSTRUCT;
-
-    if (ChooseFontW(&cf)) {
-        HFONT newFont = CreateFontIndirectW(&lf);
-        if (newFont) {
-            if (g_app.hFont) DeleteObject(g_app.hFont);
-            g_app.hFont = newFont;
-            ApplyFontToEdit(g_app.hwndEdit, g_app.hFont);
-            UpdateLayout(hwnd);
-        }
+        gtk_text_view_set_wrap_mode(GTK_TEXT_VIEW(g_app.textView), GTK_WRAP_NONE);
     }
 }
 
-static void InsertTimeDate(HWND hwnd) {
-    SYSTEMTIME st;
-    GetLocalTime(&st);
-    WCHAR date[64], time[64], stamp[128];
-    GetDateFormatW(LOCALE_USER_DEFAULT, DATE_SHORTDATE, &st, NULL, date, ARRAYSIZE(date));
-    GetTimeFormatW(LOCALE_USER_DEFAULT, TIME_NOSECONDS, &st, NULL, time, ARRAYSIZE(time));
-    StringCchPrintfW(stamp, ARRAYSIZE(stamp), L"%s %s", time, date);
-    SendMessageW(g_app.hwndEdit, EM_REPLACESEL, TRUE, (LPARAM)stamp);
-}
-
-static void HandleFindReplace(LPFINDREPLACE lpfr) {
-    if (lpfr->Flags & FR_DIALOGTERM) {
-        g_app.hFindDlg = NULL;
-        g_app.hReplaceDlg = NULL;
-        return;
-    }
-
-    g_app.findFlags = lpfr->Flags;
-    if (lpfr->lpstrFindWhat && lpfr->lpstrFindWhat[0]) {
-        StringCchCopyW(g_app.findText, ARRAYSIZE(g_app.findText), lpfr->lpstrFindWhat);
-    }
-    if (lpfr->lpstrReplaceWith) {
-        StringCchCopyW(g_app.replaceText, ARRAYSIZE(g_app.replaceText), lpfr->lpstrReplaceWith);
-    }
-
-    BOOL matchCase = (lpfr->Flags & FR_MATCHCASE) != 0;
-    BOOL down = (lpfr->Flags & FR_DOWN) != 0;
-
-    if (lpfr->Flags & FR_FINDNEXT) {
-        DWORD start = 0, end = 0;
-        SendMessageW(g_app.hwndEdit, EM_GETSEL, (WPARAM)&start, (LPARAM)&end);
-        DWORD searchStart = down ? end : start;
-        DWORD outStart = 0, outEnd = 0;
-        if (FindInEdit(g_app.hwndEdit, g_app.findText, matchCase, down, searchStart, &outStart, &outEnd)) {
-            SendMessageW(g_app.hwndEdit, EM_SETSEL, outStart, outEnd);
-            SendMessageW(g_app.hwndEdit, EM_SCROLLCARET, 0, 0);
-        } else {
-            MessageBoxW(g_app.hwndMain, L"Cannot find the text.", APP_TITLE, MB_ICONINFORMATION);
-        }
-    } else if (lpfr->Flags & FR_REPLACE) {
-        DWORD start = 0, end = 0;
-        SendMessageW(g_app.hwndEdit, EM_GETSEL, (WPARAM)&start, (LPARAM)&end);
-        DWORD outStart = 0, outEnd = 0;
-        if (FindInEdit(g_app.hwndEdit, g_app.findText, matchCase, down, start, &outStart, &outEnd)) {
-            SendMessageW(g_app.hwndEdit, EM_SETSEL, outStart, outEnd);
-            SendMessageW(g_app.hwndEdit, EM_REPLACESEL, TRUE, (LPARAM)g_app.replaceText);
-            SendMessageW(g_app.hwndEdit, EM_SCROLLCARET, 0, 0);
-            g_app.modified = TRUE;
-            UpdateTitle(g_app.hwndMain);
-        } else {
-            MessageBoxW(g_app.hwndMain, L"Cannot find the text.", APP_TITLE, MB_ICONINFORMATION);
-        }
-    } else if (lpfr->Flags & FR_REPLACEALL) {
-        int replaced = ReplaceAllOccurrences(g_app.hwndEdit, g_app.findText, g_app.replaceText, matchCase);
-        WCHAR msg[64];
-        StringCchPrintfW(msg, ARRAYSIZE(msg), L"Replaced %d occurrence%s.", replaced, replaced == 1 ? L"" : L"s");
-        MessageBoxW(g_app.hwndMain, msg, APP_TITLE, MB_OK | MB_ICONINFORMATION);
-    }
-}
-
-static void UpdateMenuStates(HWND hwnd) {
-    HMENU menu = GetMenu(hwnd);
-    if (!menu) return;
-
-    UINT wrapState = g_app.wordWrap ? MF_CHECKED : MF_UNCHECKED;
-    UINT statusState = g_app.statusVisible ? MF_CHECKED : MF_UNCHECKED;
-    CheckMenuItem(menu, IDM_FORMAT_WORD_WRAP, MF_BYCOMMAND | wrapState);
-    CheckMenuItem(menu, IDM_VIEW_STATUS_BAR, MF_BYCOMMAND | statusState);
-
-    BOOL canGoTo = !g_app.wordWrap;
-    EnableMenuItem(menu, IDM_EDIT_GOTO, MF_BYCOMMAND | (canGoTo ? MF_ENABLED : MF_GRAYED));
-    if (g_app.wordWrap) {
-        EnableMenuItem(menu, IDM_VIEW_STATUS_BAR, MF_BYCOMMAND | MF_GRAYED);
+static void ToggleStatusBar(gboolean visible) {
+    g_app.statusVisible = visible;
+    if (visible) {
+        gtk_widget_show(g_app.statusbar);
     } else {
-        EnableMenuItem(menu, IDM_VIEW_STATUS_BAR, MF_BYCOMMAND | MF_ENABLED);
-    }
-
-    BOOL modified = (SendMessageW(g_app.hwndEdit, EM_GETMODIFY, 0, 0) != 0);
-    EnableMenuItem(menu, IDM_FILE_SAVE, MF_BYCOMMAND | (modified ? MF_ENABLED : MF_GRAYED));
-}
-
-static void HandleCommand(HWND hwnd, WPARAM wParam, LPARAM lParam) {
-    switch (LOWORD(wParam)) {
-    case IDM_FILE_NEW:
-        DoFileNew(hwnd);
-        break;
-    case IDM_FILE_OPEN:
-        DoFileOpen(hwnd);
-        break;
-    case IDM_FILE_SAVE:
-        DoFileSave(hwnd, FALSE);
-        break;
-    case IDM_FILE_SAVE_AS:
-        DoFileSave(hwnd, TRUE);
-        break;
-    case IDM_FILE_PAGE_SETUP:
-    case IDM_FILE_PRINT:
-        MessageBoxW(hwnd, L"Printing is not implemented in retropad.", APP_TITLE, MB_ICONINFORMATION);
-        break;
-    case IDM_FILE_EXIT:
-        PostMessageW(hwnd, WM_CLOSE, 0, 0);
-        break;
-
-    case IDM_EDIT_UNDO:
-        SendMessageW(g_app.hwndEdit, EM_UNDO, 0, 0);
-        break;
-    case IDM_EDIT_CUT:
-        SendMessageW(g_app.hwndEdit, WM_CUT, 0, 0);
-        break;
-    case IDM_EDIT_COPY:
-        SendMessageW(g_app.hwndEdit, WM_COPY, 0, 0);
-        break;
-    case IDM_EDIT_PASTE:
-        SendMessageW(g_app.hwndEdit, WM_PASTE, 0, 0);
-        break;
-    case IDM_EDIT_DELETE:
-        SendMessageW(g_app.hwndEdit, WM_CLEAR, 0, 0);
-        break;
-    case IDM_EDIT_FIND:
-        ShowFindDialog(hwnd);
-        break;
-    case IDM_EDIT_FIND_NEXT:
-        DoFindNext(FALSE);
-        break;
-    case IDM_EDIT_REPLACE:
-        ShowReplaceDialog(hwnd);
-        break;
-    case IDM_EDIT_GOTO:
-        if (g_app.wordWrap) {
-            MessageBoxW(hwnd, L"Go To is unavailable when Word Wrap is on.", APP_TITLE, MB_ICONINFORMATION);
-        } else {
-            DialogBoxW(g_hInst, MAKEINTRESOURCE(IDD_GOTO), hwnd, GoToDlgProc);
-        }
-        break;
-    case IDM_EDIT_SELECT_ALL:
-        SendMessageW(g_app.hwndEdit, EM_SETSEL, 0, -1);
-        break;
-    case IDM_EDIT_TIME_DATE:
-        InsertTimeDate(hwnd);
-        break;
-
-    case IDM_FORMAT_WORD_WRAP:
-        SetWordWrap(hwnd, !g_app.wordWrap);
-        break;
-    case IDM_FORMAT_FONT:
-        DoSelectFont(hwnd);
-        break;
-
-    case IDM_VIEW_STATUS_BAR:
-        ToggleStatusBar(hwnd, !g_app.statusVisible);
-        break;
-
-    case IDM_HELP_VIEW_HELP:
-        MessageBoxW(hwnd, L"No help file is available for retropad.", APP_TITLE, MB_ICONINFORMATION);
-        break;
-    case IDM_HELP_ABOUT:
-        DialogBoxW(g_hInst, MAKEINTRESOURCE(IDD_ABOUT), hwnd, AboutDlgProc);
-        break;
+        gtk_widget_hide(g_app.statusbar);
     }
 }
 
-static INT_PTR CALLBACK AboutDlgProc(HWND dlg, UINT msg, WPARAM wParam, LPARAM lParam) {
-    switch (msg) {
-    case WM_INITDIALOG:
+static gboolean DoFindNext(gboolean reverse) {
+    const char *needle = gtk_entry_get_text(GTK_ENTRY(g_app.findEntry));
+    if (!needle || needle[0] == '\0') {
+        ShowFindBar();
+        return FALSE;
+    }
+
+    GtkTextIter outStart, outEnd;
+    if (FindInEdit(needle, g_app.matchCase, !reverse, &outStart, &outEnd)) {
+        gtk_text_buffer_select_range(g_app.textBuffer, &outStart, &outEnd);
+        gtk_text_view_scroll_to_iter(GTK_TEXT_VIEW(g_app.textView), &outStart, 0, FALSE, 0, 0);
         return TRUE;
-    case WM_COMMAND:
-        if (LOWORD(wParam) == IDOK || LOWORD(wParam) == IDCANCEL) {
-            EndDialog(dlg, LOWORD(wParam));
-            return TRUE;
-        }
-        break;
     }
+
+    GtkWidget *dialog = gtk_message_dialog_new(
+        GTK_WINDOW(g_app.window),
+        GTK_DIALOG_MODAL,
+        GTK_MESSAGE_INFO,
+        GTK_BUTTONS_OK,
+        "Cannot find the text.");
+    gtk_dialog_run(GTK_DIALOG(dialog));
+    gtk_widget_destroy(dialog);
     return FALSE;
 }
 
-static LRESULT CALLBACK MainWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
-    if (msg == g_findMsg) {
-        HandleFindReplace((LPFINDREPLACE)lParam);
-        return 0;
+static void DoSelectFont(void) {
+    GtkWidget *dialog = gtk_font_chooser_dialog_new(
+        "Select Font", GTK_WINDOW(g_app.window));
+
+    if (g_app.fontDesc) {
+        gtk_font_chooser_set_font_desc(GTK_FONT_CHOOSER(dialog), g_app.fontDesc);
     }
 
-    switch (msg) {
-    case WM_CREATE: {
-        INITCOMMONCONTROLSEX icc = { sizeof(icc), ICC_BAR_CLASSES };
-        InitCommonControlsEx(&icc);
-        CreateEditControl(hwnd);
-        ToggleStatusBar(hwnd, TRUE);
-        UpdateTitle(hwnd);
-        UpdateStatusBar(hwnd);
-        DragAcceptFiles(hwnd, TRUE);
-        return 0;
-    }
-    case WM_SETFOCUS:
-        if (g_app.hwndEdit) SetFocus(g_app.hwndEdit);
-        return 0;
-    case WM_SIZE:
-        UpdateLayout(hwnd);
-        UpdateStatusBar(hwnd);
-        return 0;
-    case WM_DROPFILES: {
-        HDROP hDrop = (HDROP)wParam;
-        WCHAR path[MAX_PATH_BUFFER];
-        if (DragQueryFileW(hDrop, 0, path, ARRAYSIZE(path))) {
-            if (PromptSaveChanges(hwnd)) {
-                LoadDocumentFromPath(hwnd, path);
+    if (gtk_dialog_run(GTK_DIALOG(dialog)) == GTK_RESPONSE_OK) {
+        PangoFontDescription *fontDesc =
+            gtk_font_chooser_get_font_desc(GTK_FONT_CHOOSER(dialog));
+        if (fontDesc) {
+            if (g_app.fontDesc) {
+                pango_font_description_free(g_app.fontDesc);
             }
+            g_app.fontDesc = pango_font_description_copy(fontDesc);
+            GtkCssProvider *provider = gtk_css_provider_new();
+            gchar *font_name = pango_font_description_to_string(g_app.fontDesc);
+            gchar *css = g_strdup_printf("textview { font: %s; }", font_name);
+            gtk_css_provider_load_from_data(provider, css, -1, NULL);
+            
+            GtkStyleContext *context = gtk_widget_get_style_context(g_app.textView);
+            gtk_style_context_add_provider(context, GTK_STYLE_PROVIDER(provider), GTK_STYLE_PROVIDER_PRIORITY_APPLICATION);
+            
+            g_free(css);
+            g_free(font_name);
+            g_object_unref(provider);
         }
-        DragFinish(hDrop);
-        return 0;
     }
-    case WM_COMMAND:
-        if (HIWORD(wParam) == EN_CHANGE && (HWND)lParam == g_app.hwndEdit) {
-            g_app.modified = (SendMessageW(g_app.hwndEdit, EM_GETMODIFY, 0, 0) != 0);
-            UpdateTitle(hwnd);
-            UpdateStatusBar(hwnd);
-            return 0;
-        } else if (HIWORD(wParam) == EN_UPDATE && (HWND)lParam == g_app.hwndEdit) {
-            UpdateStatusBar(hwnd);
-            return 0;
-        }
-        HandleCommand(hwnd, wParam, lParam);
-        return 0;
-    case WM_INITMENUPOPUP:
-        UpdateMenuStates(hwnd);
-        return 0;
-    case WM_CLOSE:
-        if (PromptSaveChanges(hwnd)) {
-            DestroyWindow(hwnd);
-        }
-        return 0;
-    case WM_DESTROY:
-        PostQuitMessage(0);
-        return 0;
-    }
-    return DefWindowProcW(hwnd, msg, wParam, lParam);
+    gtk_widget_destroy(dialog);
 }
 
-int APIENTRY wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPWSTR lpCmdLine, int nCmdShow) {
-    (void)hPrevInstance;
-    (void)lpCmdLine;
+static void InsertTimeDate(void) {
+    time_t now = time(NULL);
+    struct tm *tm_info = localtime(&now);
+    char stamp[128];
+    strftime(stamp, sizeof(stamp), "%X %x", tm_info);
 
-    g_hInst = hInstance;
-    g_findMsg = RegisterWindowMessageW(FINDMSGSTRINGW);
-    g_app.wordWrap = FALSE;
+    GtkTextIter cursor;
+    gtk_text_buffer_get_iter_at_mark(g_app.textBuffer,
+        &cursor, gtk_text_buffer_get_insert(g_app.textBuffer));
+    gtk_text_buffer_insert(g_app.textBuffer, &cursor, stamp, -1);
+}
+
+static void ShowFindBar(void) {
+    gtk_widget_show_all(g_app.findBar);
+    gtk_widget_grab_focus(g_app.findEntry);
+}
+
+static void ShowReplaceBar(void) {
+    gtk_widget_show_all(g_app.replaceBar);
+    gtk_widget_grab_focus(g_app.replaceEntry);
+}
+
+static void on_text_changed(GtkTextBuffer *buffer, gpointer user_data) {
+    g_app.modified = TRUE;
+    UpdateTitle();
+    UpdateStatusBar();
+}
+
+static void on_cursor_moved(GtkTextBuffer *buffer, GParamSpec *pspec, gpointer user_data) {
+    UpdateStatusBar();
+}
+
+static gboolean on_window_delete(GtkWidget *widget, GdkEvent *event, gpointer user_data) {
+    if (!PromptSaveChanges()) {
+        return TRUE;
+    }
+    gtk_main_quit();
+    return FALSE;
+}
+
+static void on_find_next(GtkWidget *widget, gpointer user_data) {
+    DoFindNext(FALSE);
+}
+
+static void on_find_previous(GtkWidget *widget, gpointer user_data) {
+    DoFindNext(TRUE);
+}
+
+static void on_replace_all(GtkWidget *widget, gpointer user_data) {
+    const char *needle = gtk_entry_get_text(GTK_ENTRY(g_app.findEntry));
+    const char *replacement = gtk_entry_get_text(GTK_ENTRY(g_app.replaceEntry));
+    int replaced = ReplaceAllOccurrences(needle, replacement, g_app.matchCase);
+
+    GtkWidget *dialog = gtk_message_dialog_new(
+        GTK_WINDOW(g_app.window),
+        GTK_DIALOG_MODAL,
+        GTK_MESSAGE_INFO,
+        GTK_BUTTONS_OK,
+        "Replaced %d occurrence%s.",
+        replaced, replaced == 1 ? "" : "s");
+    gtk_dialog_run(GTK_DIALOG(dialog));
+    gtk_widget_destroy(dialog);
+}
+
+static void on_menu_file_new(GtkWidget *widget, gpointer user_data) {
+    DoFileNew();
+}
+
+static void on_menu_file_open(GtkWidget *widget, gpointer user_data) {
+    DoFileOpen();
+}
+
+static void on_menu_file_save(GtkWidget *widget, gpointer user_data) {
+    DoFileSave(FALSE);
+}
+
+static void on_menu_file_save_as(GtkWidget *widget, gpointer user_data) {
+    DoFileSave(TRUE);
+}
+
+static void on_menu_file_quit(GtkWidget *widget, gpointer user_data) {
+    gtk_window_close(GTK_WINDOW(g_app.window));
+}
+
+static void on_menu_edit_undo(GtkWidget *widget, gpointer user_data) {
+    // GTK3 GtkTextBuffer doesn't have undo/redo built-in
+    // This would require GtkSourceView for undo support
+}
+
+static void on_menu_edit_cut(GtkWidget *widget, gpointer user_data) {
+    GtkClipboard *clipboard = gtk_clipboard_get(GDK_SELECTION_CLIPBOARD);
+    gtk_text_buffer_cut_clipboard(g_app.textBuffer, clipboard, TRUE);
+}
+
+static void on_menu_edit_copy(GtkWidget *widget, gpointer user_data) {
+    GtkClipboard *clipboard = gtk_clipboard_get(GDK_SELECTION_CLIPBOARD);
+    gtk_text_buffer_copy_clipboard(g_app.textBuffer, clipboard);
+}
+
+static void on_menu_edit_paste(GtkWidget *widget, gpointer user_data) {
+    GtkClipboard *clipboard = gtk_clipboard_get(GDK_SELECTION_CLIPBOARD);
+    gtk_text_buffer_paste_clipboard(g_app.textBuffer, clipboard, NULL, TRUE);
+}
+
+static void on_menu_edit_delete(GtkWidget *widget, gpointer user_data) {
+    gtk_text_buffer_delete_selection(g_app.textBuffer, TRUE, TRUE);
+}
+
+static void on_menu_edit_select_all(GtkWidget *widget, gpointer user_data) {
+    GtkTextIter start, end;
+    gtk_text_buffer_get_bounds(g_app.textBuffer, &start, &end);
+    gtk_text_buffer_select_range(g_app.textBuffer, &start, &end);
+}
+
+static void on_menu_edit_find(GtkWidget *widget, gpointer user_data) {
+    ShowFindBar();
+}
+
+static void on_menu_edit_replace(GtkWidget *widget, gpointer user_data) {
+    ShowReplaceBar();
+}
+
+static void on_menu_edit_time_date(GtkWidget *widget, gpointer user_data) {
+    InsertTimeDate();
+}
+
+static void on_menu_format_word_wrap(GtkWidget *widget, gpointer user_data) {
+    SetWordWrap(!g_app.wordWrap);
+}
+
+static void on_menu_format_font(GtkWidget *widget, gpointer user_data) {
+    DoSelectFont();
+}
+
+static void on_menu_view_status_bar(GtkWidget *widget, gpointer user_data) {
+    ToggleStatusBar(!g_app.statusVisible);
+}
+
+static void on_menu_help_about(GtkWidget *widget, gpointer user_data) {
+    GtkWidget *dialog = gtk_message_dialog_new(
+        GTK_WINDOW(g_app.window),
+        GTK_DIALOG_MODAL,
+        GTK_MESSAGE_INFO,
+        GTK_BUTTONS_OK,
+        "retropad\n\nA Petzold-style notepad clone for Linux");
+    gtk_dialog_run(GTK_DIALOG(dialog));
+    gtk_widget_destroy(dialog);
+}
+
+static GtkWidget *CreateMenuBar(void) {
+    GtkWidget *menubar = gtk_menu_bar_new();
+
+    // File menu
+    GtkWidget *fileMenu = gtk_menu_new();
+    GtkWidget *fileItem = gtk_menu_item_new_with_mnemonic("_File");
+    gtk_menu_item_set_submenu(GTK_MENU_ITEM(fileItem), fileMenu);
+
+    GtkWidget *newItem = gtk_menu_item_new_with_mnemonic("_New");
+    g_signal_connect(newItem, "activate", G_CALLBACK(on_menu_file_new), NULL);
+    gtk_menu_shell_append(GTK_MENU_SHELL(fileMenu), newItem);
+
+    GtkWidget *openItem = gtk_menu_item_new_with_mnemonic("_Open");
+    g_signal_connect(openItem, "activate", G_CALLBACK(on_menu_file_open), NULL);
+    gtk_menu_shell_append(GTK_MENU_SHELL(fileMenu), openItem);
+
+    GtkWidget *saveItem = gtk_menu_item_new_with_mnemonic("_Save");
+    g_signal_connect(saveItem, "activate", G_CALLBACK(on_menu_file_save), NULL);
+    gtk_menu_shell_append(GTK_MENU_SHELL(fileMenu), saveItem);
+
+    GtkWidget *saveAsItem = gtk_menu_item_new_with_mnemonic("Save _As");
+    g_signal_connect(saveAsItem, "activate", G_CALLBACK(on_menu_file_save_as), NULL);
+    gtk_menu_shell_append(GTK_MENU_SHELL(fileMenu), saveAsItem);
+
+    gtk_menu_shell_append(GTK_MENU_SHELL(fileMenu), gtk_separator_menu_item_new());
+
+    GtkWidget *exitItem = gtk_menu_item_new_with_mnemonic("E_xit");
+    g_signal_connect(exitItem, "activate", G_CALLBACK(on_menu_file_quit), NULL);
+    gtk_menu_shell_append(GTK_MENU_SHELL(fileMenu), exitItem);
+
+    gtk_menu_shell_append(GTK_MENU_SHELL(menubar), fileItem);
+
+    // Edit menu
+    GtkWidget *editMenu = gtk_menu_new();
+    GtkWidget *editItem = gtk_menu_item_new_with_mnemonic("_Edit");
+    gtk_menu_item_set_submenu(GTK_MENU_ITEM(editItem), editMenu);
+
+    GtkWidget *undoItem = gtk_menu_item_new_with_mnemonic("_Undo");
+    g_signal_connect(undoItem, "activate", G_CALLBACK(on_menu_edit_undo), NULL);
+    gtk_menu_shell_append(GTK_MENU_SHELL(editMenu), undoItem);
+
+    gtk_menu_shell_append(GTK_MENU_SHELL(editMenu), gtk_separator_menu_item_new());
+
+    GtkWidget *cutItem = gtk_menu_item_new_with_mnemonic("Cu_t");
+    g_signal_connect(cutItem, "activate", G_CALLBACK(on_menu_edit_cut), NULL);
+    gtk_menu_shell_append(GTK_MENU_SHELL(editMenu), cutItem);
+
+    GtkWidget *copyItem = gtk_menu_item_new_with_mnemonic("_Copy");
+    g_signal_connect(copyItem, "activate", G_CALLBACK(on_menu_edit_copy), NULL);
+    gtk_menu_shell_append(GTK_MENU_SHELL(editMenu), copyItem);
+
+    GtkWidget *pasteItem = gtk_menu_item_new_with_mnemonic("_Paste");
+    g_signal_connect(pasteItem, "activate", G_CALLBACK(on_menu_edit_paste), NULL);
+    gtk_menu_shell_append(GTK_MENU_SHELL(editMenu), pasteItem);
+
+    GtkWidget *deleteItem = gtk_menu_item_new_with_mnemonic("_Delete");
+    g_signal_connect(deleteItem, "activate", G_CALLBACK(on_menu_edit_delete), NULL);
+    gtk_menu_shell_append(GTK_MENU_SHELL(editMenu), deleteItem);
+
+    gtk_menu_shell_append(GTK_MENU_SHELL(editMenu), gtk_separator_menu_item_new());
+
+    GtkWidget *selectAllItem = gtk_menu_item_new_with_mnemonic("Select _All");
+    g_signal_connect(selectAllItem, "activate", G_CALLBACK(on_menu_edit_select_all), NULL);
+    gtk_menu_shell_append(GTK_MENU_SHELL(editMenu), selectAllItem);
+
+    gtk_menu_shell_append(GTK_MENU_SHELL(editMenu), gtk_separator_menu_item_new());
+
+    GtkWidget *findItem = gtk_menu_item_new_with_mnemonic("_Find");
+    g_signal_connect(findItem, "activate", G_CALLBACK(on_menu_edit_find), NULL);
+    gtk_menu_shell_append(GTK_MENU_SHELL(editMenu), findItem);
+
+    GtkWidget *replaceItem = gtk_menu_item_new_with_mnemonic("_Replace");
+    g_signal_connect(replaceItem, "activate", G_CALLBACK(on_menu_edit_replace), NULL);
+    gtk_menu_shell_append(GTK_MENU_SHELL(editMenu), replaceItem);
+
+    gtk_menu_shell_append(GTK_MENU_SHELL(editMenu), gtk_separator_menu_item_new());
+
+    GtkWidget *timeDateItem = gtk_menu_item_new_with_mnemonic("Time/Date");
+    g_signal_connect(timeDateItem, "activate", G_CALLBACK(on_menu_edit_time_date), NULL);
+    gtk_menu_shell_append(GTK_MENU_SHELL(editMenu), timeDateItem);
+
+    gtk_menu_shell_append(GTK_MENU_SHELL(menubar), editItem);
+
+    // Format menu
+    GtkWidget *formatMenu = gtk_menu_new();
+    GtkWidget *formatItem = gtk_menu_item_new_with_mnemonic("F_ormat");
+    gtk_menu_item_set_submenu(GTK_MENU_ITEM(formatItem), formatMenu);
+
+    GtkWidget *wordWrapItem = gtk_menu_item_new_with_mnemonic("_Word Wrap");
+    g_signal_connect(wordWrapItem, "activate", G_CALLBACK(on_menu_format_word_wrap), NULL);
+    gtk_menu_shell_append(GTK_MENU_SHELL(formatMenu), wordWrapItem);
+
+    GtkWidget *fontItem = gtk_menu_item_new_with_mnemonic("_Font");
+    g_signal_connect(fontItem, "activate", G_CALLBACK(on_menu_format_font), NULL);
+    gtk_menu_shell_append(GTK_MENU_SHELL(formatMenu), fontItem);
+
+    gtk_menu_shell_append(GTK_MENU_SHELL(menubar), formatItem);
+
+    // View menu
+    GtkWidget *viewMenu = gtk_menu_new();
+    GtkWidget *viewItem = gtk_menu_item_new_with_mnemonic("_View");
+    gtk_menu_item_set_submenu(GTK_MENU_ITEM(viewItem), viewMenu);
+
+    GtkWidget *statusBarItem = gtk_menu_item_new_with_mnemonic("_Status Bar");
+    g_signal_connect(statusBarItem, "activate", G_CALLBACK(on_menu_view_status_bar), NULL);
+    gtk_menu_shell_append(GTK_MENU_SHELL(viewMenu), statusBarItem);
+
+    gtk_menu_shell_append(GTK_MENU_SHELL(menubar), viewItem);
+
+    // Help menu
+    GtkWidget *helpMenu = gtk_menu_new();
+    GtkWidget *helpItem = gtk_menu_item_new_with_mnemonic("_Help");
+    gtk_menu_item_set_submenu(GTK_MENU_ITEM(helpItem), helpMenu);
+
+    GtkWidget *aboutItem = gtk_menu_item_new_with_mnemonic("_About");
+    g_signal_connect(aboutItem, "activate", G_CALLBACK(on_menu_help_about), NULL);
+    gtk_menu_shell_append(GTK_MENU_SHELL(helpMenu), aboutItem);
+
+    gtk_menu_shell_append(GTK_MENU_SHELL(menubar), helpItem);
+
+    gtk_widget_show_all(menubar);
+    return menubar;
+}
+
+int main(int argc, char *argv[]) {
+    gtk_init(&argc, &argv);
+
+    // Create main window
+    g_app.window = gtk_window_new(GTK_WINDOW_TOPLEVEL);
+    gtk_window_set_title(GTK_WINDOW(g_app.window), APP_TITLE);
+    gtk_window_set_default_size(GTK_WINDOW(g_app.window), DEFAULT_WIDTH, DEFAULT_HEIGHT);
+    g_signal_connect(g_app.window, "delete-event", G_CALLBACK(on_window_delete), NULL);
+
+    // Create VBox for layout
+    GtkWidget *vbox = gtk_box_new(GTK_ORIENTATION_VERTICAL, 0);
+    gtk_container_add(GTK_CONTAINER(g_app.window), vbox);
+
+    // Create menu bar
+    GtkWidget *menubar = CreateMenuBar();
+    gtk_box_pack_start(GTK_BOX(vbox), menubar, FALSE, FALSE, 0);
+
+    // Create text view with buffer
+    g_app.textBuffer = gtk_text_buffer_new(NULL);
+    g_signal_connect(g_app.textBuffer, "changed", G_CALLBACK(on_text_changed), NULL);
+    g_signal_connect(g_app.textBuffer, "notify::cursor-position",
+        G_CALLBACK(on_cursor_moved), NULL);
+
+    g_app.textView = gtk_text_view_new_with_buffer(g_app.textBuffer);
+    gtk_text_view_set_wrap_mode(GTK_TEXT_VIEW(g_app.textView), GTK_WRAP_WORD);
+
+    GtkWidget *scrolled = gtk_scrolled_window_new(NULL, NULL);
+    gtk_scrolled_window_set_policy(GTK_SCROLLED_WINDOW(scrolled),
+        GTK_POLICY_AUTOMATIC, GTK_POLICY_AUTOMATIC);
+    gtk_container_add(GTK_CONTAINER(scrolled), g_app.textView);
+    gtk_box_pack_start(GTK_BOX(vbox), scrolled, TRUE, TRUE, 0);
+
+    // Create find bar
+    g_app.findBar = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 5);
+    gtk_container_set_border_width(GTK_CONTAINER(g_app.findBar), 5);
+    g_app.findEntry = gtk_entry_new();
+    GtkWidget *findBtn = gtk_button_new_with_label("Find Next");
+    GtkWidget *prevBtn = gtk_button_new_with_label("Find Previous");
+    g_signal_connect(findBtn, "clicked", G_CALLBACK(on_find_next), NULL);
+    g_signal_connect(prevBtn, "clicked", G_CALLBACK(on_find_previous), NULL);
+
+    gtk_box_pack_start(GTK_BOX(g_app.findBar), gtk_label_new("Find:"), FALSE, FALSE, 0);
+    gtk_box_pack_start(GTK_BOX(g_app.findBar), g_app.findEntry, TRUE, TRUE, 0);
+    gtk_box_pack_start(GTK_BOX(g_app.findBar), findBtn, FALSE, FALSE, 0);
+    gtk_box_pack_start(GTK_BOX(g_app.findBar), prevBtn, FALSE, FALSE, 0);
+    gtk_box_pack_start(GTK_BOX(vbox), g_app.findBar, FALSE, FALSE, 0);
+    gtk_widget_hide(g_app.findBar);
+
+    // Create replace bar
+    g_app.replaceBar = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 5);
+    gtk_container_set_border_width(GTK_CONTAINER(g_app.replaceBar), 5);
+    g_app.replaceEntry = gtk_entry_new();
+    GtkWidget *replaceAllBtn = gtk_button_new_with_label("Replace All");
+    g_signal_connect(replaceAllBtn, "clicked", G_CALLBACK(on_replace_all), NULL);
+
+    gtk_box_pack_start(GTK_BOX(g_app.replaceBar), gtk_label_new("Replace:"), FALSE, FALSE, 0);
+    gtk_box_pack_start(GTK_BOX(g_app.replaceBar), g_app.replaceEntry, TRUE, TRUE, 0);
+    gtk_box_pack_start(GTK_BOX(g_app.replaceBar), replaceAllBtn, FALSE, FALSE, 0);
+    gtk_box_pack_start(GTK_BOX(vbox), g_app.replaceBar, FALSE, FALSE, 0);
+    gtk_widget_hide(g_app.replaceBar);
+
+    // Create status bar
+    g_app.statusbar = gtk_statusbar_new();
+    g_statusbar_context = gtk_statusbar_get_context_id(GTK_STATUSBAR(g_app.statusbar), "main");
+    gtk_box_pack_start(GTK_BOX(vbox), g_app.statusbar, FALSE, FALSE, 0);
+
+    g_app.wordWrap = TRUE;
     g_app.statusVisible = TRUE;
-    g_app.statusBeforeWrap = TRUE;
     g_app.encoding = ENC_UTF8;
-    g_app.findFlags = FR_DOWN;
+    g_app.modified = FALSE;
 
-    WNDCLASSEXW wc = {0};
-    wc.cbSize = sizeof(wc);
-    wc.style = CS_HREDRAW | CS_VREDRAW;
-    wc.lpfnWndProc = MainWndProc;
-    wc.hInstance = hInstance;
-    wc.hIcon = LoadIconW(hInstance, MAKEINTRESOURCE(IDI_RETROPAD));
-    wc.hIconSm = wc.hIcon;
-    wc.hCursor = LoadCursorW(NULL, IDC_IBEAM);
-    wc.hbrBackground = (HBRUSH)(COLOR_WINDOW + 1);
-    wc.lpszClassName = L"RETROPAD_WINDOW";
-    wc.lpszMenuName = MAKEINTRESOURCE(IDC_RETROPAD);
+    UpdateTitle();
+    UpdateStatusBar();
 
-    if (!RegisterClassExW(&wc)) {
-        MessageBoxW(NULL, L"Failed to register window class.", APP_TITLE, MB_ICONERROR);
-        return 0;
+    gtk_widget_show_all(g_app.window);
+    gtk_widget_hide(g_app.findBar);
+    gtk_widget_hide(g_app.replaceBar);
+
+    gtk_main();
+
+    if (g_app.fontDesc) {
+        pango_font_description_free(g_app.fontDesc);
     }
 
-    HWND hwnd = CreateWindowExW(0, wc.lpszClassName, APP_TITLE, WS_OVERLAPPEDWINDOW,
-                                CW_USEDEFAULT, CW_USEDEFAULT, DEFAULT_WIDTH, DEFAULT_HEIGHT,
-                                NULL, NULL, hInstance, NULL);
-    if (!hwnd) {
-        MessageBoxW(NULL, L"Failed to create main window.", APP_TITLE, MB_ICONERROR);
-        return 0;
-    }
-
-    g_app.hwndMain = hwnd;
-    ShowWindow(hwnd, nCmdShow);
-    UpdateWindow(hwnd);
-
-    HACCEL accel = LoadAcceleratorsW(hInstance, MAKEINTRESOURCE(IDC_RETROPAD));
-
-    MSG msg;
-    while (GetMessageW(&msg, NULL, 0, 0)) {
-        if (!accel || !TranslateAcceleratorW(hwnd, accel, &msg)) {
-            TranslateMessage(&msg);
-            DispatchMessageW(&msg);
-        }
-    }
-
-    return (int)msg.wParam;
+    return 0;
 }
