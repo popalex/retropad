@@ -9,6 +9,12 @@
 #define MAX_PATH_BUFFER 1024
 #define DEFAULT_WIDTH 640
 #define DEFAULT_HEIGHT 480
+#define MAX_UNDO_STACK 100
+
+typedef struct UndoRedoEntry {
+    char *text;
+    gint cursorPos;
+} UndoRedoEntry;
 
 typedef struct AppState {
     GtkWidget *window;
@@ -27,11 +33,19 @@ typedef struct AppState {
     GtkWidget *replaceEntry;
     gboolean matchCase;
     gboolean searchDown;
+    /* Undo/Redo stack */
+    GQueue *undoStack;
+    GQueue *redoStack;
+    gboolean isUndoRedoInProgress;
 } AppState;
 
 static AppState g_app = {0};
 static guint g_statusbar_context = 0;
 
+static void PushUndoStack(void);
+static void ClearRedoStack(void);
+static void DoUndo(void);
+static void DoRedo(void);
 static void UpdateTitle(void);
 static void UpdateStatusBar(void);
 static gboolean PromptSaveChanges(void);
@@ -46,6 +60,94 @@ static gboolean DoFindNext(gboolean reverse);
 static void DoSelectFont(void);
 static void InsertTimeDate(void);
 static gboolean LoadDocumentFromPath(const char *path);
+
+static UndoRedoEntry* CreateUndoEntry(void) {
+    UndoRedoEntry *entry = g_new(UndoRedoEntry, 1);
+    GtkTextIter start, end;
+    gtk_text_buffer_get_bounds(g_app.textBuffer, &start, &end);
+    entry->text = gtk_text_buffer_get_text(g_app.textBuffer, &start, &end, FALSE);
+    
+    GtkTextIter cursor;
+    gtk_text_buffer_get_iter_at_mark(g_app.textBuffer,
+        &cursor, gtk_text_buffer_get_insert(g_app.textBuffer));
+    entry->cursorPos = gtk_text_iter_get_offset(&cursor);
+    
+    return entry;
+}
+
+static void FreeUndoEntry(gpointer data) {
+    UndoRedoEntry *entry = (UndoRedoEntry *)data;
+    if (entry) {
+        g_free(entry->text);
+        g_free(entry);
+    }
+}
+
+static void PushUndoStack(void) {
+    if (g_app.isUndoRedoInProgress) return;
+    
+    /* Limit undo stack size */
+    while (g_queue_get_length(g_app.undoStack) >= MAX_UNDO_STACK) {
+        FreeUndoEntry(g_queue_pop_head(g_app.undoStack));
+    }
+    
+    g_queue_push_tail(g_app.undoStack, CreateUndoEntry());
+}
+
+static void ClearRedoStack(void) {
+    g_queue_foreach(g_app.redoStack, (GFunc)FreeUndoEntry, NULL);
+    g_queue_clear(g_app.redoStack);
+}
+
+static void DoUndo(void) {
+    if (g_queue_is_empty(g_app.undoStack)) return;
+    
+    g_app.isUndoRedoInProgress = TRUE;
+    
+    /* Save current state to redo stack */
+    g_queue_push_tail(g_app.redoStack, CreateUndoEntry());
+    
+    /* Pop and restore from undo stack */
+    UndoRedoEntry *entry = (UndoRedoEntry *)g_queue_pop_tail(g_app.undoStack);
+    if (entry) {
+        gtk_text_buffer_set_text(g_app.textBuffer, entry->text, -1);
+        
+        GtkTextIter cursor;
+        gtk_text_buffer_get_iter_at_offset(g_app.textBuffer, &cursor, entry->cursorPos);
+        gtk_text_buffer_place_cursor(g_app.textBuffer, &cursor);
+        gtk_text_view_scroll_to_iter(GTK_TEXT_VIEW(g_app.textView), &cursor, 0, FALSE, 0, 0);
+        
+        FreeUndoEntry(entry);
+    }
+    
+    g_app.isUndoRedoInProgress = FALSE;
+    UpdateStatusBar();
+}
+
+static void DoRedo(void) {
+    if (g_queue_is_empty(g_app.redoStack)) return;
+    
+    g_app.isUndoRedoInProgress = TRUE;
+    
+    /* Save current state to undo stack */
+    g_queue_push_tail(g_app.undoStack, CreateUndoEntry());
+    
+    /* Pop and restore from redo stack */
+    UndoRedoEntry *entry = (UndoRedoEntry *)g_queue_pop_tail(g_app.redoStack);
+    if (entry) {
+        gtk_text_buffer_set_text(g_app.textBuffer, entry->text, -1);
+        
+        GtkTextIter cursor;
+        gtk_text_buffer_get_iter_at_offset(g_app.textBuffer, &cursor, entry->cursorPos);
+        gtk_text_buffer_place_cursor(g_app.textBuffer, &cursor);
+        gtk_text_view_scroll_to_iter(GTK_TEXT_VIEW(g_app.textView), &cursor, 0, FALSE, 0, 0);
+        
+        FreeUndoEntry(entry);
+    }
+    
+    g_app.isUndoRedoInProgress = FALSE;
+    UpdateStatusBar();
+}
 
 static void UpdateTitle(void) {
     char name[MAX_PATH_BUFFER];
@@ -217,6 +319,9 @@ static void DoFileNew(void) {
     g_app.currentPath[0] = '\0';
     g_app.encoding = ENC_UTF8;
     g_app.modified = FALSE;
+    ClearRedoStack();
+    g_queue_foreach(g_app.undoStack, (GFunc)FreeUndoEntry, NULL);
+    g_queue_clear(g_app.undoStack);
     UpdateTitle();
     UpdateStatusBar();
 }
@@ -299,6 +404,9 @@ static gboolean LoadDocumentFromPath(const char *path) {
     strncpy(g_app.currentPath, path, MAX_PATH_BUFFER - 1);
     g_app.encoding = enc;
     g_app.modified = FALSE;
+    ClearRedoStack();
+    g_queue_foreach(g_app.undoStack, (GFunc)FreeUndoEntry, NULL);
+    g_queue_clear(g_app.undoStack);
     UpdateTitle();
     UpdateStatusBar();
     return TRUE;
@@ -430,6 +538,10 @@ static void ShowReplaceBar(void) {
 }
 
 static void on_text_changed(GtkTextBuffer *buffer, gpointer user_data) {
+    if (!g_app.isUndoRedoInProgress) {
+        PushUndoStack();
+        ClearRedoStack();
+    }
     g_app.modified = TRUE;
     UpdateTitle();
     UpdateStatusBar();
@@ -494,6 +606,11 @@ static void on_menu_file_quit(GtkWidget *widget, gpointer user_data) {
 static void on_menu_edit_undo(GtkWidget *widget, gpointer user_data) {
     // GTK3 GtkTextBuffer doesn't have undo/redo built-in
     // This would require GtkSourceView for undo support
+    DoUndo();
+}
+
+static void on_menu_edit_redo(GtkWidget *widget, gpointer user_data) {
+    DoRedo();
 }
 
 static void on_menu_edit_cut(GtkWidget *widget, gpointer user_data) {
@@ -596,6 +713,10 @@ static GtkWidget *CreateMenuBar(void) {
     GtkWidget *undoItem = gtk_menu_item_new_with_mnemonic("_Undo");
     g_signal_connect(undoItem, "activate", G_CALLBACK(on_menu_edit_undo), NULL);
     gtk_menu_shell_append(GTK_MENU_SHELL(editMenu), undoItem);
+
+    GtkWidget *redoItem = gtk_menu_item_new_with_mnemonic("_Redo");
+    g_signal_connect(redoItem, "activate", G_CALLBACK(on_menu_edit_redo), NULL);
+    gtk_menu_shell_append(GTK_MENU_SHELL(editMenu), redoItem);
 
     gtk_menu_shell_append(GTK_MENU_SHELL(editMenu), gtk_separator_menu_item_new());
 
@@ -746,6 +867,11 @@ int main(int argc, char *argv[]) {
     g_statusbar_context = gtk_statusbar_get_context_id(GTK_STATUSBAR(g_app.statusbar), "main");
     gtk_box_pack_start(GTK_BOX(vbox), g_app.statusbar, FALSE, FALSE, 0);
 
+    /* Initialize undo/redo stacks */
+    g_app.undoStack = g_queue_new();
+    g_app.redoStack = g_queue_new();
+    g_app.isUndoRedoInProgress = FALSE;
+
     g_app.wordWrap = TRUE;
     g_app.statusVisible = TRUE;
     g_app.encoding = ENC_UTF8;
@@ -759,6 +885,12 @@ int main(int argc, char *argv[]) {
     gtk_widget_hide(g_app.replaceBar);
 
     gtk_main();
+
+    /* Cleanup undo/redo stacks */
+    g_queue_foreach(g_app.undoStack, (GFunc)FreeUndoEntry, NULL);
+    g_queue_free(g_app.undoStack);
+    g_queue_foreach(g_app.redoStack, (GFunc)FreeUndoEntry, NULL);
+    g_queue_free(g_app.redoStack);
 
     if (g_app.fontDesc) {
         pango_font_description_free(g_app.fontDesc);
