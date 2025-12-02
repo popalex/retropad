@@ -1,62 +1,79 @@
 # retropad
 
-A Petzold-style Win32 Notepad clone written in mostly plain C. It keeps the classic menus, accelerators, word wrap toggle, status bar, find/replace, font picker, time/date insertion, and BOM-aware load/save. Printing is intentionally omitted.
+A Petzold-style Notepad clone written in mostly plain C for Linux using GTK3. It keeps the classic menus, accelerators, word wrap toggle, status bar, find/replace, font picker, time/date insertion, and BOM-aware load/save. Printing is intentionally omitted.
 
-## Prerequisites (Windows)
+## Prerequisites (Linux)
+
 - Git
-- Visual Studio 2022 (or Build Tools) with the "Desktop development with C++" workload
-- Use a "x64 Native Tools Command Prompt for VS 2022" (or any Developer Command Prompt) so `cl`, `rc`, and `nmake` are on your `PATH`.
+- GCC or Clang compiler
+- CMake 3.12 or later
+- GTK3 development libraries: `libgtk-3-dev`
+- GLib development libraries: `libglib2.0-dev`
 
-Optional: MinGW-w64 for `make` + `gcc` (a separate POSIX-style `Makefile` is included).
+### Ubuntu/Debian
+```bash
+sudo apt-get install build-essential cmake libgtk-3-dev libglib2.0-dev
+```
+
+### Fedora/RHEL
+```bash
+sudo dnf install gcc cmake gtk3-devel glib2-devel
+```
+
+### Arch
+```bash
+sudo pacman -S base-devel cmake gtk3 glib2
+```
 
 ## Get the code
-```bat
+```bash
 git clone https://github.com/your/repo.git retropad
 cd retropad
 ```
 
-## Build with MSVC (`nmake`)
-From a Developer Command Prompt:
-```bat
-nmake /f makefile
-```
-This runs `rc` then `cl` and produces `retropad.exe` in the repo root. Clean with:
-```bat
-nmake /f makefile clean
-```
-
-## Build with MinGW (optional)
-If you have `gcc`, `windres`, and `make` on PATH:
+## Build with CMake
 ```bash
+mkdir build
+cd build
+cmake ..
 make
 ```
-Artifacts end up in the repo root (`retropad.exe`, object files, and `retropad.res`). Clean with `make clean`.
+
+This produces the `retropad` executable in the `build/` directory. Clean with:
+```bash
+make clean
+# or to remove build directory entirely:
+cd .. && rm -rf build
+```
 
 ## Run
-Double-click `retropad.exe` or start from a prompt:
-```bat
-.\retropad.exe
+```bash
+./build/retropad
+# or after building, from the build directory:
+./retropad
 ```
 
 ## Features & notes
-- Menus/accelerators: File, Edit, Format, View, Help; classic Notepad key bindings (Ctrl+N/O/S, Ctrl+F, F3, Ctrl+H, Ctrl+G, F5, etc.).
-- Word Wrap toggles horizontal scrolling; status bar auto-hides while wrapped, restored when unwrapped.
-- Find/Replace dialogs (standard `FINDMSGSTRING`), Go To (disabled when word wrap is on).
-- Font picker (ChooseFont), time/date insertion, drag-and-drop to open files.
-- File I/O: detects UTF-8/UTF-16 BOMs, falls back to UTF-8/ANSI heuristic; saves with UTF-8 BOM by default.
-- Printing/page setup menu items show a “not implemented” notice by design.
-- Icon: linked as the main app icon from `res/retropad.ico` via `retropad.rc`.
+- Menus: File, Edit, Format, View, Help with standard keyboard shortcuts (Ctrl+N/O/S, Ctrl+F, Ctrl+H, etc.).
+- Word Wrap toggles text wrapping; status bar displays line and column numbers.
+- Find/Replace bars with find next/previous and replace all functionality.
+- Font picker for custom fonts and sizes.
+- Time/date insertion.
+- File I/O: detects UTF-8/UTF-16/ANSI encodings via BOM detection; saves with UTF-8 BOM by default.
+- Status bar shows current line/column and total line count.
+- Cut, copy, paste, select all with clipboard integration.
 
 ## Project layout
-- `retropad.c` — WinMain, window proc, UI logic, find/replace, menus, layout.
-- `file_io.c/.h` — file open/save dialogs and encoding-aware load/save helpers.
-- `resource.h` — resource IDs.
-- `retropad.rc` — menus, accelerators, dialogs, version info, icon.
-- `res/retropad.ico` — application icon.
-- `makefile` — MSVC `nmake` build script.
-- `Makefile` — MinGW/GNU make build script.
+- `retropad.c` — main application, GTK3 UI, window setup, menus, callbacks.
+- `file_io.c/.h` — GTK3 file dialogs and encoding-aware load/save helpers.
+- `CMakeLists.txt` — CMake build configuration with GTK3 dependencies.
+- `build/` — generated build artifacts and executable (after building).
 
-## Common build hiccups
-- If `nmake` is missing, use a Developer Command Prompt (it sets up `PATH`).
-- If you see RC4204 warnings about ASCII/virtual keys, they’re benign and come from control-key accelerator lines.
-- If `rc`/`cl` aren’t found, rerun `vcvarsall.bat` or reopen the Developer Command Prompt.
+## Common build issues
+- If GTK3 headers are not found, install `libgtk-3-dev` (Ubuntu/Debian) or equivalent for your distro.
+- If CMake fails, ensure `cmake` is in your PATH: `cmake --version`.
+- If compilation fails with undefined references, ensure all GTK3 libraries are linked: check CMakeLists.txt has the correct `target_link_libraries`.
+
+## Notes
+- Undo/Redo is not implemented (GTK3 GtkTextBuffer doesn't include built-in undo; would require GtkSourceView).
+- No drag-and-drop file opening in the current version.
