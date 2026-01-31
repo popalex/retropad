@@ -73,6 +73,13 @@ cd .. && rm -rf build
 - If GTK3 headers are not found, install `libgtk-3-dev` (Ubuntu/Debian) or equivalent for your distro.
 - If CMake fails, ensure `cmake` is in your PATH: `cmake --version`.
 - If compilation fails with undefined references, ensure all GTK3 libraries are linked: check CMakeLists.txt has the correct `target_link_libraries`.
+- If `make` says "No targets specified and no makefile found" after running `cmake ..` from the build directory, there may be stale CMake cache files in the source directory. Clean them with:
+
+  ```bash
+  rm -rf CMakeCache.txt CMakeFiles cmake_install.cmake Makefile
+  ```
+  
+  Then retry the build steps.
 
 ## Notes
 - Undo/Redo is not implemented (GTK3 GtkTextBuffer doesn't include built-in undo; would require GtkSourceView).
