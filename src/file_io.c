@@ -66,6 +66,7 @@ static gboolean DecodeToUTF8(const guchar *data, gsize size, TextEncoding encodi
 }
 
 gboolean LoadTextFile(void *owner, const char *path, char **textOut, size_t *lengthOut, TextEncoding *encodingOut) {
+    (void)owner;
     *textOut = NULL;
     if (lengthOut) *lengthOut = 0;
     if (encodingOut) *encodingOut = ENC_UTF8;
@@ -162,6 +163,7 @@ static gboolean WriteANSI(FILE *file, const char *text, size_t length) {
 }
 
 gboolean SaveTextFile(void *owner, const char *path, const char *text, size_t length, TextEncoding encoding) {
+    (void)owner;
     FILE *file = g_fopen(path, "wb");
     if (!file) {
         return FALSE;
