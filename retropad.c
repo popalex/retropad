@@ -10,6 +10,9 @@
 #define DEFAULT_WIDTH 640
 #define DEFAULT_HEIGHT 480
 #define MAX_UNDO_STACK 100
+#define MAX_RECENT_FILES 5
+#define LINE_NUMBER_MARGIN_WIDTH 50
+#define RECENT_FILES_PATH ".retropad_recent"
 
 typedef struct UndoRedoEntry {
     char *text;
@@ -41,6 +44,16 @@ typedef struct AppState {
     gint lastUndoLength;
     gint64 lastUndoTime;
     gchar lastChar;  /* Track last character for efficient break detection */
+    /* Line numbers */
+    GtkWidget *lineNumberView;
+    gboolean lineNumbersVisible;
+    /* Recent files */
+    GList *recentFiles;
+    GtkWidget *recentFilesMenu;
+    /* Toggle menu items (for checkmarks) */
+    GtkWidget *wordWrapMenuItem;
+    GtkWidget *statusBarMenuItem;
+    GtkWidget *lineNumbersMenuItem;
 } AppState;
 
 static AppState g_app = {0};
@@ -65,6 +78,15 @@ static gboolean DoFindNext(gboolean reverse);
 static void DoSelectFont(void);
 static void InsertTimeDate(void);
 static gboolean LoadDocumentFromPath(const char *path);
+static void DoGotoLine(void);
+static void DoPrint(void);
+static void DoPageSetup(void);
+static void ToggleLineNumbers(gboolean visible);
+static void LoadRecentFiles(void);
+static void SaveRecentFiles(void);
+static void AddRecentFile(const char *path);
+static void UpdateRecentFilesMenu(void);
+static void SetupDragAndDrop(void);
 
 static UndoRedoEntry* CreateUndoEntry(void) {
     UndoRedoEntry *entry = g_new(UndoRedoEntry, 1);
@@ -342,19 +364,19 @@ static int ReplaceAllOccurrences(const char *needle, const char *replacement,
     }
 
     GString *result = g_string_new("");
-    p = searchBuf;
-    const char *orig = text;
+    char *searchPtr = searchBuf;  /* Use separate pointer for iteration */
+    const char *origPtr = text;
     
-    while ((p = strstr(p, needleBuf)) != NULL) {
-        int delta = p - searchBuf;
-        g_string_append_len(result, orig, delta);
+    while ((p = strstr(searchPtr, needleBuf)) != NULL) {
+        int delta = p - searchPtr;
+        g_string_append_len(result, origPtr, delta);
         if (replacement) {
             g_string_append(result, replacement);
         }
-        orig += delta + strlen(needle);
-        searchBuf += delta + strlen(needleBuf);
+        origPtr += delta + strlen(needle);
+        searchPtr = p + strlen(needleBuf);
     }
-    g_string_append(result, orig);
+    g_string_append(result, origPtr);
 
     gtk_text_buffer_set_text(g_app.textBuffer, result->str, -1);
     g_string_free(result, TRUE);
@@ -468,9 +490,373 @@ static gboolean LoadDocumentFromPath(const char *path) {
     g_app.lastUndoLength = 0;
     g_app.lastUndoTime = 0;
     g_app.lastChar = '\0';
+    AddRecentFile(path);
     UpdateTitle();
     UpdateStatusBar();
     return TRUE;
+}
+
+/* ===== Go To Line ===== */
+
+/* Filter input to only allow digits */
+static void on_goto_entry_insert(GtkEditable *editable, const gchar *text,
+                                  gint length, gint *position, gpointer data) {
+    for (int i = 0; i < length; i++) {
+        if (!g_ascii_isdigit(text[i])) {
+            g_signal_stop_emission_by_name(editable, "insert-text");
+            return;
+        }
+    }
+}
+
+/* Validate line number and update Go To button sensitivity */
+static void on_goto_entry_changed(GtkEditable *editable, gpointer data) {
+    GtkWidget *dialog = GTK_WIDGET(data);
+    GtkWidget *goButton = gtk_dialog_get_widget_for_response(GTK_DIALOG(dialog), GTK_RESPONSE_ACCEPT);
+    
+    const char *text = gtk_entry_get_text(GTK_ENTRY(editable));
+    
+    /* Get total line count */
+    GtkTextIter end;
+    gtk_text_buffer_get_end_iter(g_app.textBuffer, &end);
+    gint totalLines = gtk_text_iter_get_line(&end) + 1;
+    
+    /* Validate: must be a number between 1 and totalLines */
+    gboolean valid = FALSE;
+    if (text && text[0] != '\0') {
+        int line = atoi(text);
+        valid = (line >= 1 && line <= totalLines);
+    }
+    
+    gtk_widget_set_sensitive(goButton, valid);
+}
+
+static void DoGotoLine(void) {
+    GtkWidget *dialog = gtk_dialog_new_with_buttons(
+        "Go To Line", GTK_WINDOW(g_app.window),
+        GTK_DIALOG_MODAL | GTK_DIALOG_DESTROY_WITH_PARENT,
+        "_Cancel", GTK_RESPONSE_CANCEL,
+        "_Go To", GTK_RESPONSE_ACCEPT,
+        NULL);
+    
+    gtk_dialog_set_default_response(GTK_DIALOG(dialog), GTK_RESPONSE_ACCEPT);
+    
+    GtkWidget *content = gtk_dialog_get_content_area(GTK_DIALOG(dialog));
+    GtkWidget *vbox = gtk_box_new(GTK_ORIENTATION_VERTICAL, 5);
+    gtk_container_set_border_width(GTK_CONTAINER(vbox), 10);
+    
+    /* Get total line count for display */
+    GtkTextIter end;
+    gtk_text_buffer_get_end_iter(g_app.textBuffer, &end);
+    gint totalLines = gtk_text_iter_get_line(&end) + 1;
+    
+    char labelText[64];
+    snprintf(labelText, sizeof(labelText), "Line number (1 - %d):", totalLines);
+    GtkWidget *label = gtk_label_new(labelText);
+    gtk_widget_set_halign(label, GTK_ALIGN_START);
+    
+    GtkWidget *entry = gtk_entry_new();
+    gtk_entry_set_input_purpose(GTK_ENTRY(entry), GTK_INPUT_PURPOSE_DIGITS);
+    gtk_entry_set_activates_default(GTK_ENTRY(entry), TRUE);
+    
+    /* Connect validation signals */
+    g_signal_connect(entry, "insert-text", G_CALLBACK(on_goto_entry_insert), NULL);
+    g_signal_connect(entry, "changed", G_CALLBACK(on_goto_entry_changed), dialog);
+    
+    /* Pre-fill with current line number */
+    GtkTextIter cursor;
+    gtk_text_buffer_get_iter_at_mark(g_app.textBuffer,
+        &cursor, gtk_text_buffer_get_insert(g_app.textBuffer));
+    gint currentLine = gtk_text_iter_get_line(&cursor) + 1;
+    char lineStr[16];
+    snprintf(lineStr, sizeof(lineStr), "%d", currentLine);
+    gtk_entry_set_text(GTK_ENTRY(entry), lineStr);
+    gtk_editable_select_region(GTK_EDITABLE(entry), 0, -1);
+    
+    gtk_box_pack_start(GTK_BOX(vbox), label, FALSE, FALSE, 0);
+    gtk_box_pack_start(GTK_BOX(vbox), entry, FALSE, FALSE, 0);
+    gtk_container_add(GTK_CONTAINER(content), vbox);
+    
+    gtk_widget_show_all(dialog);
+    
+    if (gtk_dialog_run(GTK_DIALOG(dialog)) == GTK_RESPONSE_ACCEPT) {
+        const char *text = gtk_entry_get_text(GTK_ENTRY(entry));
+        int line = atoi(text);
+        if (line >= 1 && line <= totalLines) {
+            GtkTextIter iter;
+            gtk_text_buffer_get_iter_at_line(g_app.textBuffer, &iter, line - 1);
+            gtk_text_buffer_place_cursor(g_app.textBuffer, &iter);
+            gtk_text_view_scroll_to_iter(GTK_TEXT_VIEW(g_app.textView), &iter, 0.1, TRUE, 0, 0.5);
+        }
+    }
+    gtk_widget_destroy(dialog);
+}
+
+/* ===== Print Support ===== */
+static GtkPrintSettings *g_printSettings = NULL;
+static GtkPageSetup *g_pageSetup = NULL;
+
+static void DrawPage(GtkPrintOperation *operation, GtkPrintContext *context, gint page_nr, gpointer user_data) {
+    cairo_t *cr = gtk_print_context_get_cairo_context(context);
+    gdouble width = gtk_print_context_get_width(context);
+    
+    PangoLayout *layout = gtk_print_context_create_pango_layout(context);
+    
+    if (g_app.fontDesc) {
+        pango_layout_set_font_description(layout, g_app.fontDesc);
+    } else {
+        PangoFontDescription *desc = pango_font_description_from_string("Monospace 10");
+        pango_layout_set_font_description(layout, desc);
+        pango_font_description_free(desc);
+    }
+    
+    pango_layout_set_width(layout, width * PANGO_SCALE);
+    pango_layout_set_wrap(layout, PANGO_WRAP_WORD_CHAR);
+    
+    char *text = NULL;
+    GetEditText(&text, NULL);
+    if (text) {
+        pango_layout_set_text(layout, text, -1);
+        g_free(text);
+    }
+    
+    cairo_move_to(cr, 0, 0);
+    pango_cairo_show_layout(cr, layout);
+    
+    g_object_unref(layout);
+}
+
+static void DoPrint(void) {
+    GtkPrintOperation *print = gtk_print_operation_new();
+    
+    if (g_printSettings) {
+        gtk_print_operation_set_print_settings(print, g_printSettings);
+    }
+    if (g_pageSetup) {
+        gtk_print_operation_set_default_page_setup(print, g_pageSetup);
+    }
+    
+    gtk_print_operation_set_n_pages(print, 1);  /* Simplified: single page */
+    gtk_print_operation_set_unit(print, GTK_UNIT_POINTS);
+    
+    g_signal_connect(print, "draw-page", G_CALLBACK(DrawPage), NULL);
+    
+    GtkPrintOperationResult res = gtk_print_operation_run(print,
+        GTK_PRINT_OPERATION_ACTION_PRINT_DIALOG,
+        GTK_WINDOW(g_app.window), NULL);
+    
+    if (res == GTK_PRINT_OPERATION_RESULT_APPLY) {
+        if (g_printSettings) g_object_unref(g_printSettings);
+        g_printSettings = g_object_ref(gtk_print_operation_get_print_settings(print));
+    }
+    
+    g_object_unref(print);
+}
+
+static void DoPageSetup(void) {
+    GtkPageSetup *newSetup = gtk_print_run_page_setup_dialog(
+        GTK_WINDOW(g_app.window), g_pageSetup, g_printSettings);
+    
+    if (g_pageSetup) g_object_unref(g_pageSetup);
+    g_pageSetup = newSetup;
+}
+
+/* ===== Line Numbers ===== */
+static gboolean OnLineNumbersDraw(GtkWidget *widget, cairo_t *cr, gpointer data) {
+    GdkRGBA bg = {0.95, 0.95, 0.95, 1.0};
+    GdkRGBA fg = {0.5, 0.5, 0.5, 1.0};
+    
+    gdk_cairo_set_source_rgba(cr, &bg);
+    cairo_paint(cr);
+    
+    gdk_cairo_set_source_rgba(cr, &fg);
+    
+    PangoLayout *layout = gtk_widget_create_pango_layout(widget, NULL);
+    if (g_app.fontDesc) {
+        pango_layout_set_font_description(layout, g_app.fontDesc);
+    }
+    
+    GtkTextIter iter;
+    gtk_text_buffer_get_start_iter(g_app.textBuffer, &iter);
+    
+    GdkRectangle visible;
+    gtk_text_view_get_visible_rect(GTK_TEXT_VIEW(g_app.textView), &visible);
+    
+    int y = 0;
+    int lineNum = 1;
+    
+    while (!gtk_text_iter_is_end(&iter)) {
+        GdkRectangle loc;
+        gtk_text_view_get_iter_location(GTK_TEXT_VIEW(g_app.textView), &iter, &loc);
+        
+        int winY;
+        gtk_text_view_buffer_to_window_coords(GTK_TEXT_VIEW(g_app.textView),
+            GTK_TEXT_WINDOW_WIDGET, 0, loc.y, NULL, &winY);
+        
+        if (winY >= -loc.height && winY <= visible.height + loc.height) {
+            char numStr[16];
+            snprintf(numStr, sizeof(numStr), "%d", lineNum);
+            pango_layout_set_text(layout, numStr, -1);
+            
+            int tw, th;
+            pango_layout_get_pixel_size(layout, &tw, &th);
+            
+            cairo_move_to(cr, LINE_NUMBER_MARGIN_WIDTH - tw - 5, winY);
+            pango_cairo_show_layout(cr, layout);
+        }
+        
+        if (!gtk_text_iter_forward_line(&iter)) break;
+        lineNum++;
+    }
+    
+    g_object_unref(layout);
+    return FALSE;
+}
+
+static void OnTextViewScrolled(GtkAdjustment *adj, gpointer data) {
+    if (g_app.lineNumbersVisible && g_app.lineNumberView) {
+        gtk_widget_queue_draw(g_app.lineNumberView);
+    }
+}
+
+static void ToggleLineNumbers(gboolean visible) {
+    g_app.lineNumbersVisible = visible;
+    if (g_app.lineNumberView) {
+        if (visible) {
+            gtk_widget_show(g_app.lineNumberView);
+        } else {
+            gtk_widget_hide(g_app.lineNumberView);
+        }
+    }
+    if (g_app.lineNumbersMenuItem) {
+        gtk_check_menu_item_set_active(GTK_CHECK_MENU_ITEM(g_app.lineNumbersMenuItem), visible);
+    }
+}
+
+/* ===== Recent Files ===== */
+static void LoadRecentFiles(void) {
+    g_app.recentFiles = NULL;
+    
+    const char *home = g_get_home_dir();
+    char path[MAX_PATH_BUFFER];
+    snprintf(path, sizeof(path), "%s/%s", home, RECENT_FILES_PATH);
+    
+    FILE *f = fopen(path, "r");
+    if (!f) return;
+    
+    char line[MAX_PATH_BUFFER];
+    while (fgets(line, sizeof(line), f)) {
+        size_t len = strlen(line);
+        if (len > 0 && line[len-1] == '\n') line[len-1] = '\0';
+        if (line[0] && g_file_test(line, G_FILE_TEST_EXISTS)) {
+            g_app.recentFiles = g_list_append(g_app.recentFiles, g_strdup(line));
+        }
+    }
+    fclose(f);
+}
+
+static void SaveRecentFiles(void) {
+    const char *home = g_get_home_dir();
+    char path[MAX_PATH_BUFFER];
+    snprintf(path, sizeof(path), "%s/%s", home, RECENT_FILES_PATH);
+    
+    FILE *f = fopen(path, "w");
+    if (!f) return;
+    
+    for (GList *l = g_app.recentFiles; l; l = l->next) {
+        fprintf(f, "%s\n", (char *)l->data);
+    }
+    fclose(f);
+}
+
+static void AddRecentFile(const char *path) {
+    if (!path || path[0] == '\0') return;
+    
+    /* Remove if already exists */
+    for (GList *l = g_app.recentFiles; l; l = l->next) {
+        if (strcmp((char *)l->data, path) == 0) {
+            g_free(l->data);
+            g_app.recentFiles = g_list_delete_link(g_app.recentFiles, l);
+            break;
+        }
+    }
+    
+    /* Add to front */
+    g_app.recentFiles = g_list_prepend(g_app.recentFiles, g_strdup(path));
+    
+    /* Trim to max */
+    while (g_list_length(g_app.recentFiles) > MAX_RECENT_FILES) {
+        GList *last = g_list_last(g_app.recentFiles);
+        g_free(last->data);
+        g_app.recentFiles = g_list_delete_link(g_app.recentFiles, last);
+    }
+    
+    SaveRecentFiles();
+    UpdateRecentFilesMenu();
+}
+
+static void OnRecentFileActivate(GtkWidget *widget, gpointer data) {
+    const char *path = (const char *)data;
+    if (PromptSaveChanges()) {
+        LoadDocumentFromPath(path);
+    }
+}
+
+static void UpdateRecentFilesMenu(void) {
+    if (!g_app.recentFilesMenu) return;
+    
+    /* Clear existing items */
+    GList *children = gtk_container_get_children(GTK_CONTAINER(g_app.recentFilesMenu));
+    for (GList *l = children; l; l = l->next) {
+        gtk_widget_destroy(GTK_WIDGET(l->data));
+    }
+    g_list_free(children);
+    
+    /* Add new items */
+    if (!g_app.recentFiles) {
+        GtkWidget *item = gtk_menu_item_new_with_label("(No recent files)");
+        gtk_widget_set_sensitive(item, FALSE);
+        gtk_menu_shell_append(GTK_MENU_SHELL(g_app.recentFilesMenu), item);
+    } else {
+        for (GList *l = g_app.recentFiles; l; l = l->next) {
+            const char *path = (const char *)l->data;
+            const char *name = strrchr(path, '/');
+            name = name ? name + 1 : path;
+            
+            GtkWidget *item = gtk_menu_item_new_with_label(name);
+            gtk_widget_set_tooltip_text(item, path);
+            g_signal_connect(item, "activate", G_CALLBACK(OnRecentFileActivate), l->data);
+            gtk_menu_shell_append(GTK_MENU_SHELL(g_app.recentFilesMenu), item);
+        }
+    }
+    
+    gtk_widget_show_all(g_app.recentFilesMenu);
+}
+
+/* ===== Drag and Drop ===== */
+static void OnDragDataReceived(GtkWidget *widget, GdkDragContext *context,
+                               gint x, gint y, GtkSelectionData *data,
+                               guint info, guint time, gpointer user_data) {
+    gchar **uris = gtk_selection_data_get_uris(data);
+    if (uris && uris[0]) {
+        gchar *path = g_filename_from_uri(uris[0], NULL, NULL);
+        if (path) {
+            if (PromptSaveChanges()) {
+                LoadDocumentFromPath(path);
+            }
+            g_free(path);
+        }
+        g_strfreev(uris);
+    }
+    gtk_drag_finish(context, TRUE, FALSE, time);
+}
+
+static void SetupDragAndDrop(void) {
+    GtkTargetEntry targets[] = {
+        {"text/uri-list", 0, 0}
+    };
+    gtk_drag_dest_set(g_app.textView, GTK_DEST_DEFAULT_ALL, targets, 1, GDK_ACTION_COPY);
+    g_signal_connect(g_app.textView, "drag-data-received", G_CALLBACK(OnDragDataReceived), NULL);
 }
 
 static gboolean PromptSaveChanges(void) {
@@ -620,6 +1006,31 @@ static gboolean on_window_delete(GtkWidget *widget, GdkEvent *event, gpointer us
     return FALSE;
 }
 
+/* Keyboard handler for find/replace bars: Enter to search, Escape to close */
+static gboolean on_find_entry_key_press(GtkWidget *widget, GdkEventKey *event, gpointer user_data) {
+    if (event->keyval == GDK_KEY_Escape) {
+        gtk_widget_hide(g_app.findBar);
+        gtk_widget_hide(g_app.replaceBar);
+        gtk_widget_grab_focus(g_app.textView);
+        return TRUE;
+    }
+    if (event->keyval == GDK_KEY_Return || event->keyval == GDK_KEY_KP_Enter) {
+        DoFindNext(FALSE);
+        return TRUE;
+    }
+    return FALSE;
+}
+
+static gboolean on_replace_entry_key_press(GtkWidget *widget, GdkEventKey *event, gpointer user_data) {
+    if (event->keyval == GDK_KEY_Escape) {
+        gtk_widget_hide(g_app.findBar);
+        gtk_widget_hide(g_app.replaceBar);
+        gtk_widget_grab_focus(g_app.textView);
+        return TRUE;
+    }
+    return FALSE;
+}
+
 static void on_find_next(GtkWidget *widget, gpointer user_data) {
     DoFindNext(FALSE);
 }
@@ -712,7 +1123,8 @@ static void on_menu_edit_time_date(GtkWidget *widget, gpointer user_data) {
 }
 
 static void on_menu_format_word_wrap(GtkWidget *widget, gpointer user_data) {
-    SetWordWrap(!g_app.wordWrap);
+    gboolean active = gtk_check_menu_item_get_active(GTK_CHECK_MENU_ITEM(widget));
+    SetWordWrap(active);
 }
 
 static void on_menu_format_font(GtkWidget *widget, gpointer user_data) {
@@ -720,7 +1132,25 @@ static void on_menu_format_font(GtkWidget *widget, gpointer user_data) {
 }
 
 static void on_menu_view_status_bar(GtkWidget *widget, gpointer user_data) {
-    ToggleStatusBar(!g_app.statusVisible);
+    gboolean active = gtk_check_menu_item_get_active(GTK_CHECK_MENU_ITEM(widget));
+    ToggleStatusBar(active);
+}
+
+static void on_menu_view_line_numbers(GtkWidget *widget, gpointer user_data) {
+    gboolean active = gtk_check_menu_item_get_active(GTK_CHECK_MENU_ITEM(widget));
+    ToggleLineNumbers(active);
+}
+
+static void on_menu_edit_goto(GtkWidget *widget, gpointer user_data) {
+    DoGotoLine();
+}
+
+static void on_menu_file_print(GtkWidget *widget, gpointer user_data) {
+    DoPrint();
+}
+
+static void on_menu_file_page_setup(GtkWidget *widget, gpointer user_data) {
+    DoPageSetup();
 }
 
 static void on_menu_help_about(GtkWidget *widget, gpointer user_data) {
@@ -761,6 +1191,25 @@ static GtkWidget *CreateMenuBar(GtkAccelGroup *accelGroup) {
     g_signal_connect(saveAsItem, "activate", G_CALLBACK(on_menu_file_save_as), NULL);
     gtk_widget_add_accelerator(saveAsItem, "activate", accelGroup, GDK_KEY_s, GDK_CONTROL_MASK | GDK_SHIFT_MASK, GTK_ACCEL_VISIBLE);
     gtk_menu_shell_append(GTK_MENU_SHELL(fileMenu), saveAsItem);
+
+    gtk_menu_shell_append(GTK_MENU_SHELL(fileMenu), gtk_separator_menu_item_new());
+
+    GtkWidget *pageSetupItem = gtk_menu_item_new_with_mnemonic("Page Set_up...");
+    g_signal_connect(pageSetupItem, "activate", G_CALLBACK(on_menu_file_page_setup), NULL);
+    gtk_menu_shell_append(GTK_MENU_SHELL(fileMenu), pageSetupItem);
+
+    GtkWidget *printItem = gtk_menu_item_new_with_mnemonic("_Print...");
+    g_signal_connect(printItem, "activate", G_CALLBACK(on_menu_file_print), NULL);
+    gtk_widget_add_accelerator(printItem, "activate", accelGroup, GDK_KEY_p, GDK_CONTROL_MASK, GTK_ACCEL_VISIBLE);
+    gtk_menu_shell_append(GTK_MENU_SHELL(fileMenu), printItem);
+
+    gtk_menu_shell_append(GTK_MENU_SHELL(fileMenu), gtk_separator_menu_item_new());
+
+    /* Recent Files submenu */
+    GtkWidget *recentItem = gtk_menu_item_new_with_mnemonic("_Recent Files");
+    g_app.recentFilesMenu = gtk_menu_new();
+    gtk_menu_item_set_submenu(GTK_MENU_ITEM(recentItem), g_app.recentFilesMenu);
+    gtk_menu_shell_append(GTK_MENU_SHELL(fileMenu), recentItem);
 
     gtk_menu_shell_append(GTK_MENU_SHELL(fileMenu), gtk_separator_menu_item_new());
 
@@ -826,6 +1275,11 @@ static GtkWidget *CreateMenuBar(GtkAccelGroup *accelGroup) {
     gtk_widget_add_accelerator(replaceItem, "activate", accelGroup, GDK_KEY_h, GDK_CONTROL_MASK, GTK_ACCEL_VISIBLE);
     gtk_menu_shell_append(GTK_MENU_SHELL(editMenu), replaceItem);
 
+    GtkWidget *gotoItem = gtk_menu_item_new_with_mnemonic("_Go To...");
+    g_signal_connect(gotoItem, "activate", G_CALLBACK(on_menu_edit_goto), NULL);
+    gtk_widget_add_accelerator(gotoItem, "activate", accelGroup, GDK_KEY_g, GDK_CONTROL_MASK, GTK_ACCEL_VISIBLE);
+    gtk_menu_shell_append(GTK_MENU_SHELL(editMenu), gotoItem);
+
     gtk_menu_shell_append(GTK_MENU_SHELL(editMenu), gtk_separator_menu_item_new());
 
     GtkWidget *timeDateItem = gtk_menu_item_new_with_mnemonic("Time/Date");
@@ -840,8 +1294,10 @@ static GtkWidget *CreateMenuBar(GtkAccelGroup *accelGroup) {
     GtkWidget *formatItem = gtk_menu_item_new_with_mnemonic("F_ormat");
     gtk_menu_item_set_submenu(GTK_MENU_ITEM(formatItem), formatMenu);
 
-    GtkWidget *wordWrapItem = gtk_menu_item_new_with_mnemonic("_Word Wrap");
-    g_signal_connect(wordWrapItem, "activate", G_CALLBACK(on_menu_format_word_wrap), NULL);
+    GtkWidget *wordWrapItem = gtk_check_menu_item_new_with_mnemonic("_Word Wrap");
+    gtk_check_menu_item_set_active(GTK_CHECK_MENU_ITEM(wordWrapItem), TRUE);
+    g_app.wordWrapMenuItem = wordWrapItem;
+    g_signal_connect(wordWrapItem, "toggled", G_CALLBACK(on_menu_format_word_wrap), NULL);
     gtk_widget_add_accelerator(wordWrapItem, "activate", accelGroup, GDK_KEY_w, GDK_CONTROL_MASK, GTK_ACCEL_VISIBLE);
     gtk_menu_shell_append(GTK_MENU_SHELL(formatMenu), wordWrapItem);
 
@@ -856,9 +1312,17 @@ static GtkWidget *CreateMenuBar(GtkAccelGroup *accelGroup) {
     GtkWidget *viewItem = gtk_menu_item_new_with_mnemonic("_View");
     gtk_menu_item_set_submenu(GTK_MENU_ITEM(viewItem), viewMenu);
 
-    GtkWidget *statusBarItem = gtk_menu_item_new_with_mnemonic("_Status Bar");
-    g_signal_connect(statusBarItem, "activate", G_CALLBACK(on_menu_view_status_bar), NULL);
+    GtkWidget *statusBarItem = gtk_check_menu_item_new_with_mnemonic("_Status Bar");
+    gtk_check_menu_item_set_active(GTK_CHECK_MENU_ITEM(statusBarItem), TRUE);
+    g_app.statusBarMenuItem = statusBarItem;
+    g_signal_connect(statusBarItem, "toggled", G_CALLBACK(on_menu_view_status_bar), NULL);
     gtk_menu_shell_append(GTK_MENU_SHELL(viewMenu), statusBarItem);
+
+    GtkWidget *lineNumbersItem = gtk_check_menu_item_new_with_mnemonic("_Line Numbers");
+    gtk_check_menu_item_set_active(GTK_CHECK_MENU_ITEM(lineNumbersItem), FALSE);
+    g_app.lineNumbersMenuItem = lineNumbersItem;
+    g_signal_connect(lineNumbersItem, "toggled", G_CALLBACK(on_menu_view_line_numbers), NULL);
+    gtk_menu_shell_append(GTK_MENU_SHELL(viewMenu), lineNumbersItem);
 
     gtk_menu_shell_append(GTK_MENU_SHELL(menubar), viewItem);
 
@@ -907,16 +1371,34 @@ int main(int argc, char *argv[]) {
     g_app.textView = gtk_text_view_new_with_buffer(g_app.textBuffer);
     gtk_text_view_set_wrap_mode(GTK_TEXT_VIEW(g_app.textView), GTK_WRAP_WORD);
 
+    /* Create HBox for line numbers + text view */
+    GtkWidget *editorBox = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 0);
+
+    /* Line number margin */
+    g_app.lineNumberView = gtk_drawing_area_new();
+    gtk_widget_set_size_request(g_app.lineNumberView, LINE_NUMBER_MARGIN_WIDTH, -1);
+    g_signal_connect(g_app.lineNumberView, "draw", G_CALLBACK(OnLineNumbersDraw), NULL);
+    gtk_box_pack_start(GTK_BOX(editorBox), g_app.lineNumberView, FALSE, FALSE, 0);
+    g_app.lineNumbersVisible = FALSE;
+
     GtkWidget *scrolled = gtk_scrolled_window_new(NULL, NULL);
     gtk_scrolled_window_set_policy(GTK_SCROLLED_WINDOW(scrolled),
         GTK_POLICY_AUTOMATIC, GTK_POLICY_AUTOMATIC);
     gtk_container_add(GTK_CONTAINER(scrolled), g_app.textView);
-    gtk_box_pack_start(GTK_BOX(vbox), scrolled, TRUE, TRUE, 0);
+    gtk_box_pack_start(GTK_BOX(editorBox), scrolled, TRUE, TRUE, 0);
+
+    /* Connect scroll adjustment to redraw line numbers */
+    GtkAdjustment *vadj = gtk_scrolled_window_get_vadjustment(GTK_SCROLLED_WINDOW(scrolled));
+    g_signal_connect(vadj, "value-changed", G_CALLBACK(OnTextViewScrolled), NULL);
+    g_signal_connect(g_app.textBuffer, "changed", G_CALLBACK(OnTextViewScrolled), NULL);
+
+    gtk_box_pack_start(GTK_BOX(vbox), editorBox, TRUE, TRUE, 0);
 
     // Create find bar
     g_app.findBar = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 5);
     gtk_container_set_border_width(GTK_CONTAINER(g_app.findBar), 5);
     g_app.findEntry = gtk_entry_new();
+    g_signal_connect(g_app.findEntry, "key-press-event", G_CALLBACK(on_find_entry_key_press), NULL);
     GtkWidget *findBtn = gtk_button_new_with_label("Find Next");
     GtkWidget *prevBtn = gtk_button_new_with_label("Find Previous");
     g_signal_connect(findBtn, "clicked", G_CALLBACK(on_find_next), NULL);
@@ -933,6 +1415,7 @@ int main(int argc, char *argv[]) {
     g_app.replaceBar = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 5);
     gtk_container_set_border_width(GTK_CONTAINER(g_app.replaceBar), 5);
     g_app.replaceEntry = gtk_entry_new();
+    g_signal_connect(g_app.replaceEntry, "key-press-event", G_CALLBACK(on_replace_entry_key_press), NULL);
     GtkWidget *replaceAllBtn = gtk_button_new_with_label("Replace All");
     g_signal_connect(replaceAllBtn, "clicked", G_CALLBACK(on_replace_all), NULL);
 
@@ -960,12 +1443,20 @@ int main(int argc, char *argv[]) {
     g_app.encoding = ENC_UTF8;
     g_app.modified = FALSE;
 
+    /* Load recent files and update menu */
+    LoadRecentFiles();
+    UpdateRecentFilesMenu();
+
+    /* Setup drag and drop */
+    SetupDragAndDrop();
+
     UpdateTitle();
     UpdateStatusBar();
 
     gtk_widget_show_all(g_app.window);
     gtk_widget_hide(g_app.findBar);
     gtk_widget_hide(g_app.replaceBar);
+    gtk_widget_hide(g_app.lineNumberView);
 
     gtk_main();
 
@@ -974,6 +1465,13 @@ int main(int argc, char *argv[]) {
     g_queue_free(g_app.undoStack);
     g_queue_foreach(g_app.redoStack, (GFunc)FreeUndoEntry, NULL);
     g_queue_free(g_app.redoStack);
+
+    /* Cleanup recent files */
+    g_list_free_full(g_app.recentFiles, g_free);
+
+    /* Cleanup print settings */
+    if (g_printSettings) g_object_unref(g_printSettings);
+    if (g_pageSetup) g_object_unref(g_pageSetup);
 
     if (g_app.fontDesc) {
         pango_font_description_free(g_app.fontDesc);

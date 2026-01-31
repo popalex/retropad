@@ -120,12 +120,29 @@ static gboolean WriteUTF16LE(FILE *file, const char *text, size_t length) {
         return FALSE;
     }
     GError *error = NULL;
-    gchar *converted = g_convert(text, length, "UTF-16LE", "UTF-8", NULL, NULL, &error);
+    gsize conv_len = 0;
+    gchar *converted = g_convert(text, length, "UTF-16LE", "UTF-8", NULL, &conv_len, &error);
     if (error) {
         g_error_free(error);
         return FALSE;
     }
-    gsize conv_len = strlen(converted);
+    gboolean ok = fwrite(converted, 1, conv_len, file) == conv_len;
+    g_free(converted);
+    return ok;
+}
+
+static gboolean WriteUTF16BE(FILE *file, const char *text, size_t length) {
+    static const guchar bom[] = {0xFE, 0xFF};
+    if (fwrite(bom, sizeof(bom), 1, file) != 1) {
+        return FALSE;
+    }
+    GError *error = NULL;
+    gsize conv_len = 0;
+    gchar *converted = g_convert(text, length, "UTF-16BE", "UTF-8", NULL, &conv_len, &error);
+    if (error) {
+        g_error_free(error);
+        return FALSE;
+    }
     gboolean ok = fwrite(converted, 1, conv_len, file) == conv_len;
     g_free(converted);
     return ok;
@@ -159,9 +176,7 @@ gboolean SaveTextFile(void *owner, const char *path, const char *text, size_t le
         ok = WriteANSI(file, text, length);
         break;
     case ENC_UTF16BE:
-        // Saving as UTF-16BE is uncommon; fall back to UTF-8 with BOM to preserve readability
-        ok = WriteUTF8WithBOM(file, text, length);
-        encoding = ENC_UTF8;
+        ok = WriteUTF16BE(file, text, length);
         break;
     case ENC_UTF8:
     default:
