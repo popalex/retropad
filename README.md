@@ -78,9 +78,10 @@ cd .. && rm -rf build
   ```bash
   rm -rf CMakeCache.txt CMakeFiles cmake_install.cmake Makefile
   ```
-  
+
   Then retry the build steps.
 
 ## Notes
-- Undo/Redo is not implemented (GTK3 GtkTextBuffer doesn't include built-in undo; would require GtkSourceView).
-- No drag-and-drop file opening in the current version.
+- Custom undo/redo implementation with smart grouping (groups consecutive typing, breaks on punctuation/500ms timeout).
+- Drag-and-drop file opening is supported.
+- Line numbers can be toggled from View menu.

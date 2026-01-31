@@ -27,4 +27,5 @@ gboolean on_replace_entry_key_press(GtkWidget *widget, GdkEventKey *event, gpoin
 /* Button click handlers */
 void on_find_next(GtkWidget *widget, gpointer user_data);
 void on_find_previous(GtkWidget *widget, gpointer user_data);
+void on_replace(GtkWidget *widget, gpointer user_data);
 void on_replace_all(GtkWidget *widget, gpointer user_data);

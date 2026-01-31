@@ -81,6 +81,16 @@ static void on_menu_edit_find(GtkWidget *widget, gpointer user_data) {
     ShowFindBar();
 }
 
+static void on_menu_edit_find_next(GtkWidget *widget, gpointer user_data) {
+    (void)widget; (void)user_data;
+    DoFindNext(FALSE);
+}
+
+static void on_menu_edit_find_previous(GtkWidget *widget, gpointer user_data) {
+    (void)widget; (void)user_data;
+    DoFindNext(TRUE);
+}
+
 static void on_menu_edit_replace(GtkWidget *widget, gpointer user_data) {
     (void)widget; (void)user_data;
     ShowReplaceBar();
@@ -240,6 +250,16 @@ GtkWidget* CreateMenuBar(GtkAccelGroup *accelGroup) {
     gtk_widget_add_accelerator(findItem, "activate", accelGroup, GDK_KEY_f, GDK_CONTROL_MASK, GTK_ACCEL_VISIBLE);
     gtk_menu_shell_append(GTK_MENU_SHELL(editMenu), findItem);
 
+    GtkWidget *findNextItem = gtk_menu_item_new_with_mnemonic("Find _Next");
+    g_signal_connect(findNextItem, "activate", G_CALLBACK(on_menu_edit_find_next), NULL);
+    gtk_widget_add_accelerator(findNextItem, "activate", accelGroup, GDK_KEY_F3, 0, GTK_ACCEL_VISIBLE);
+    gtk_menu_shell_append(GTK_MENU_SHELL(editMenu), findNextItem);
+
+    GtkWidget *findPrevItem = gtk_menu_item_new_with_mnemonic("Find Pre_vious");
+    g_signal_connect(findPrevItem, "activate", G_CALLBACK(on_menu_edit_find_previous), NULL);
+    gtk_widget_add_accelerator(findPrevItem, "activate", accelGroup, GDK_KEY_F3, GDK_SHIFT_MASK, GTK_ACCEL_VISIBLE);
+    gtk_menu_shell_append(GTK_MENU_SHELL(editMenu), findPrevItem);
+
     GtkWidget *replaceItem = gtk_menu_item_new_with_mnemonic("_Replace");
     g_signal_connect(replaceItem, "activate", G_CALLBACK(on_menu_edit_replace), NULL);
     gtk_widget_add_accelerator(replaceItem, "activate", accelGroup, GDK_KEY_h, GDK_CONTROL_MASK, GTK_ACCEL_VISIBLE);
@@ -311,6 +331,11 @@ GtkWidget* CreateMenuBar(GtkAccelGroup *accelGroup) {
     return menubar;
 }
 
+static void on_match_case_toggled(GtkToggleButton *button, gpointer user_data) {
+    (void)user_data;
+    g_app.matchCase = gtk_toggle_button_get_active(button);
+}
+
 void CreateFindReplaceBar(GtkWidget *vbox) {
     // Create find bar
     g_app.findBar = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 5);
@@ -319,13 +344,16 @@ void CreateFindReplaceBar(GtkWidget *vbox) {
     g_signal_connect(g_app.findEntry, "key-press-event", G_CALLBACK(on_find_entry_key_press), NULL);
     GtkWidget *findBtn = gtk_button_new_with_label("Find Next");
     GtkWidget *prevBtn = gtk_button_new_with_label("Find Previous");
+    GtkWidget *matchCaseCheck = gtk_check_button_new_with_label("Match Case");
     g_signal_connect(findBtn, "clicked", G_CALLBACK(on_find_next), NULL);
     g_signal_connect(prevBtn, "clicked", G_CALLBACK(on_find_previous), NULL);
+    g_signal_connect(matchCaseCheck, "toggled", G_CALLBACK(on_match_case_toggled), NULL);
 
     gtk_box_pack_start(GTK_BOX(g_app.findBar), gtk_label_new("Find:"), FALSE, FALSE, 0);
     gtk_box_pack_start(GTK_BOX(g_app.findBar), g_app.findEntry, TRUE, TRUE, 0);
     gtk_box_pack_start(GTK_BOX(g_app.findBar), findBtn, FALSE, FALSE, 0);
     gtk_box_pack_start(GTK_BOX(g_app.findBar), prevBtn, FALSE, FALSE, 0);
+    gtk_box_pack_start(GTK_BOX(g_app.findBar), matchCaseCheck, FALSE, FALSE, 0);
     gtk_box_pack_start(GTK_BOX(vbox), g_app.findBar, FALSE, FALSE, 0);
     gtk_widget_hide(g_app.findBar);
 
@@ -334,11 +362,14 @@ void CreateFindReplaceBar(GtkWidget *vbox) {
     gtk_container_set_border_width(GTK_CONTAINER(g_app.replaceBar), 5);
     g_app.replaceEntry = gtk_entry_new();
     g_signal_connect(g_app.replaceEntry, "key-press-event", G_CALLBACK(on_replace_entry_key_press), NULL);
+    GtkWidget *replaceBtn = gtk_button_new_with_label("Replace");
     GtkWidget *replaceAllBtn = gtk_button_new_with_label("Replace All");
+    g_signal_connect(replaceBtn, "clicked", G_CALLBACK(on_replace), NULL);
     g_signal_connect(replaceAllBtn, "clicked", G_CALLBACK(on_replace_all), NULL);
 
     gtk_box_pack_start(GTK_BOX(g_app.replaceBar), gtk_label_new("Replace:"), FALSE, FALSE, 0);
     gtk_box_pack_start(GTK_BOX(g_app.replaceBar), g_app.replaceEntry, TRUE, TRUE, 0);
+    gtk_box_pack_start(GTK_BOX(g_app.replaceBar), replaceBtn, FALSE, FALSE, 0);
     gtk_box_pack_start(GTK_BOX(g_app.replaceBar), replaceAllBtn, FALSE, FALSE, 0);
     gtk_box_pack_start(GTK_BOX(vbox), g_app.replaceBar, FALSE, FALSE, 0);
     gtk_widget_hide(g_app.replaceBar);

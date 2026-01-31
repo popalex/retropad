@@ -12,8 +12,9 @@ gboolean FindInEdit(const char *needle, gboolean matchCase, gboolean searchDown,
     int len = 0;
     if (!GetEditText(&text, &len)) return FALSE;
 
-    char *haystack = text;
+    char *haystack = g_strdup(text);
     char *needleBuf = g_strdup(needle);
+    size_t needleLen = strlen(needle);
 
     if (!matchCase) {
         char *p = haystack;
@@ -28,27 +29,63 @@ gboolean FindInEdit(const char *needle, gboolean matchCase, gboolean searchDown,
         }
     }
 
-    GtkTextIter cursor;
-    gtk_text_buffer_get_iter_at_mark(g_app.textBuffer,
-        &cursor, gtk_text_buffer_get_insert(g_app.textBuffer));
-    gint searchPos = gtk_text_iter_get_offset(&cursor);
-    if (!searchDown) searchPos = 0;
-
-    char *found = strstr(haystack + searchPos, needleBuf);
-    if (!found && searchDown) {
-        found = strstr(haystack, needleBuf);
+    /* Get search start position - use selection end for forward, selection start for backward */
+    GtkTextIter selStart, selEnd;
+    gint searchPos;
+    if (gtk_text_buffer_get_selection_bounds(g_app.textBuffer, &selStart, &selEnd)) {
+        searchPos = searchDown ? gtk_text_iter_get_offset(&selEnd) : gtk_text_iter_get_offset(&selStart);
+    } else {
+        GtkTextIter cursor;
+        gtk_text_buffer_get_iter_at_mark(g_app.textBuffer,
+            &cursor, gtk_text_buffer_get_insert(g_app.textBuffer));
+        searchPos = gtk_text_iter_get_offset(&cursor);
     }
 
+    char *found = NULL;
     gboolean result = FALSE;
+
+    if (searchDown) {
+        /* Search forward from position */
+        found = strstr(haystack + searchPos, needleBuf);
+        if (!found) {
+            /* Wrap around to beginning */
+            found = strstr(haystack, needleBuf);
+        }
+    } else {
+        /* Search backward - find last occurrence before searchPos */
+        char *lastFound = NULL;
+        char *p = haystack;
+        while ((p = strstr(p, needleBuf)) != NULL) {
+            if ((p - haystack) < searchPos) {
+                lastFound = p;
+                p += 1;
+            } else {
+                break;
+            }
+        }
+        if (lastFound) {
+            found = lastFound;
+        } else {
+            /* Wrap around - find last occurrence in entire text */
+            p = haystack;
+            while ((p = strstr(p, needleBuf)) != NULL) {
+                lastFound = p;
+                p += 1;
+            }
+            found = lastFound;
+        }
+    }
+
     if (found) {
         gint pos = found - haystack;
         gtk_text_buffer_get_iter_at_offset(g_app.textBuffer, outStart, pos);
         gtk_text_buffer_get_iter_at_offset(g_app.textBuffer, outEnd,
-                                          pos + strlen(needle));
+                                          pos + needleLen);
         result = TRUE;
     }
 
     g_free(text);
+    g_free(haystack);
     g_free(needleBuf);
     return result;
 }
@@ -129,6 +166,20 @@ void ShowReplaceBar(void) {
 
 gboolean DoFindNext(gboolean reverse) {
     const char *needle = gtk_entry_get_text(GTK_ENTRY(g_app.findEntry));
+    
+    /* If find entry is empty, try to use selected text */
+    if (!needle || needle[0] == '\0') {
+        GtkTextIter selStart, selEnd;
+        if (gtk_text_buffer_get_selection_bounds(g_app.textBuffer, &selStart, &selEnd)) {
+            char *selected = gtk_text_buffer_get_text(g_app.textBuffer, &selStart, &selEnd, FALSE);
+            if (selected && selected[0] != '\0') {
+                gtk_entry_set_text(GTK_ENTRY(g_app.findEntry), selected);
+                needle = gtk_entry_get_text(GTK_ENTRY(g_app.findEntry));
+            }
+            g_free(selected);
+        }
+    }
+    
     if (!needle || needle[0] == '\0') {
         ShowFindBar();
         return FALSE;
@@ -190,6 +241,38 @@ void on_find_previous(GtkWidget *widget, gpointer user_data) {
     (void)widget;
     (void)user_data;
     DoFindNext(TRUE);
+}
+
+void on_replace(GtkWidget *widget, gpointer user_data) {
+    (void)widget;
+    (void)user_data;
+    const char *needle = gtk_entry_get_text(GTK_ENTRY(g_app.findEntry));
+    const char *replacement = gtk_entry_get_text(GTK_ENTRY(g_app.replaceEntry));
+    
+    if (!needle || needle[0] == '\0') return;
+    
+    /* Check if current selection matches the search term */
+    GtkTextIter selStart, selEnd;
+    if (gtk_text_buffer_get_selection_bounds(g_app.textBuffer, &selStart, &selEnd)) {
+        char *selected = gtk_text_buffer_get_text(g_app.textBuffer, &selStart, &selEnd, FALSE);
+        gboolean matches = FALSE;
+        
+        if (g_app.matchCase) {
+            matches = (strcmp(selected, needle) == 0);
+        } else {
+            matches = (g_ascii_strcasecmp(selected, needle) == 0);
+        }
+        
+        if (matches) {
+            /* Replace the selection */
+            gtk_text_buffer_delete(g_app.textBuffer, &selStart, &selEnd);
+            gtk_text_buffer_insert(g_app.textBuffer, &selStart, replacement, -1);
+        }
+        g_free(selected);
+    }
+    
+    /* Find next occurrence */
+    DoFindNext(FALSE);
 }
 
 void on_replace_all(GtkWidget *widget, gpointer user_data) {

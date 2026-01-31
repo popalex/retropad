@@ -71,6 +71,11 @@ int main(int argc, char *argv[]) {
     gtk_widget_hide(g_app.replaceBar);
     gtk_widget_hide(g_app.lineNumberView);
 
+    /* Open file from command line argument */
+    if (argc > 1) {
+        LoadDocumentFromPath(argv[1]);
+    }
+
     gtk_main();
 
     /* Cleanup */

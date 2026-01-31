@@ -35,9 +35,18 @@ void UpdateStatusBar(void) {
     gint line = gtk_text_iter_get_line(&cursor) + 1;
     gint col = gtk_text_iter_get_line_offset(&cursor) + 1;
 
+    /* Get encoding name */
+    const char *encName = "UTF-8";
+    switch (g_app.encoding) {
+        case ENC_UTF16LE: encName = "UTF-16 LE"; break;
+        case ENC_UTF16BE: encName = "UTF-16 BE"; break;
+        case ENC_ANSI: encName = "ANSI"; break;
+        case ENC_UTF8: default: encName = "UTF-8"; break;
+    }
+
     char status[128];
-    snprintf(status, sizeof(status), "Ln %d, Col %d    Lines: %d",
-             line, col, totalLines);
+    snprintf(status, sizeof(status), "Ln %d, Col %d    Lines: %d    %s",
+             line, col, totalLines, encName);
 
     gtk_statusbar_pop(GTK_STATUSBAR(g_app.statusbar), g_statusbar_context);
     gtk_statusbar_push(GTK_STATUSBAR(g_app.statusbar), g_statusbar_context, status);
