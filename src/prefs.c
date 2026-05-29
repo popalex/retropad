@@ -82,14 +82,16 @@ void LoadPrefs(void) {
             g_app.fontDesc = desc;
 
             if (g_app.textView) {
-                GtkCssProvider *provider = gtk_css_provider_new();
                 gchar *css = g_strdup_printf("textview { font: %s; }", font);
-                gtk_css_provider_load_from_data(provider, css, -1, NULL);
-                GtkStyleContext *ctx = gtk_widget_get_style_context(g_app.textView);
-                gtk_style_context_add_provider(ctx, GTK_STYLE_PROVIDER(provider),
-                                               GTK_STYLE_PROVIDER_PRIORITY_APPLICATION);
+
+                if (!g_app.cssProvider) {
+                    g_app.cssProvider = gtk_css_provider_new();
+                    GtkStyleContext *ctx = gtk_widget_get_style_context(g_app.textView);
+                    gtk_style_context_add_provider(ctx, GTK_STYLE_PROVIDER(g_app.cssProvider),
+                                                   GTK_STYLE_PROVIDER_PRIORITY_APPLICATION);
+                }
+                gtk_css_provider_load_from_data(g_app.cssProvider, css, -1, NULL);
                 g_free(css);
-                g_object_unref(provider);
             }
         }
     }
@@ -136,7 +138,11 @@ void SavePrefs(void) {
     GError *err = NULL;
     gchar *data = g_key_file_to_data(kf, NULL, &err);
     if (!err && data) {
-        g_file_set_contents(path, data, -1, NULL);
+        GError *writeErr = NULL;
+        if (!g_file_set_contents(path, data, -1, &writeErr)) {
+            g_warning("Failed to save preferences: %s", writeErr ? writeErr->message : "unknown error");
+            g_clear_error(&writeErr);
+        }
     }
     g_clear_error(&err);
     g_free(data);

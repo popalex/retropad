@@ -37,4 +37,7 @@ void AppStateCleanup(void) {
     if (g_app.fontDesc) {
         pango_font_description_free(g_app.fontDesc);
     }
+    if (g_app.cssProvider) {
+        g_object_unref(g_app.cssProvider);
+    }
 }

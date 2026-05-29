@@ -24,11 +24,13 @@ void LoadRecentFiles(void) {
     if (!f) return;
     
     char line[MAX_PATH_BUFFER];
-    while (fgets(line, sizeof(line), f)) {
+    int count = 0;
+    while (fgets(line, sizeof(line), f) && count < MAX_RECENT_FILES) {
         size_t len = strlen(line);
         if (len > 0 && line[len-1] == '\n') line[len-1] = '\0';
         if (line[0] && g_file_test(line, G_FILE_TEST_EXISTS)) {
             g_app.recentFiles = g_list_append(g_app.recentFiles, g_strdup(line));
+            count++;
         }
     }
     fclose(f);

@@ -68,8 +68,10 @@ gboolean GetEditText(char **bufferOut, size_t *lengthOut) {
 void InsertTimeDate(void) {
     time_t now = time(NULL);
     struct tm *tm_info = localtime(&now);
+    if (!tm_info) return;
+    
     char stamp[128];
-    strftime(stamp, sizeof(stamp), "%X %x", tm_info);
+    if (strftime(stamp, sizeof(stamp), "%X %x", tm_info) == 0) return;
 
     GtkTextIter cursor;
     gtk_text_buffer_get_iter_at_mark(g_app.textBuffer,

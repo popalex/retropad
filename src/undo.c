@@ -4,6 +4,14 @@
 #include "utils.h"
 #include <string.h>
 
+typedef struct UndoRedoEntry {
+    char *text;
+    gint cursorPos;
+} UndoRedoEntry;
+
+/* Holds the last known buffer state before the current change */
+static UndoRedoEntry *g_pendingState = NULL;
+
 static UndoRedoEntry* CreateUndoEntry(void) {
     UndoRedoEntry *entry = g_new(UndoRedoEntry, 1);
     GtkTextIter start, end;
@@ -61,7 +69,7 @@ void PushUndoStack(void) {
      */
     gboolean shouldPush = TRUE;
     
-    if (!g_queue_is_empty(g_app.undoStack)) {
+    if (!g_queue_is_empty(g_app.undoStack) || g_pendingState) {
         gint timeDiff = (currentTime - g_app.lastUndoTime) / 1000; /* Convert to ms */
         gint lengthDiff = currentLength - g_app.lastUndoLength;
         gboolean isSignificant = IsSignificantChar(lastChar);
@@ -72,14 +80,21 @@ void PushUndoStack(void) {
         }
     }
     
-    if (shouldPush) {
-        /* Limit undo stack size */
+    if (shouldPush && g_pendingState) {
+        /* Push the previous (pre-change) state onto the undo stack */
         while (g_queue_get_length(g_app.undoStack) >= MAX_UNDO_STACK) {
             FreeUndoEntry(g_queue_pop_head(g_app.undoStack), NULL);
         }
         
-        g_queue_push_tail(g_app.undoStack, CreateUndoEntry());
+        g_queue_push_tail(g_app.undoStack, g_pendingState);
+        g_pendingState = NULL;
     }
+    
+    /* Capture the current (post-change) state as the new pending state */
+    if (g_pendingState) {
+        FreeUndoEntry(g_pendingState, NULL);
+    }
+    g_pendingState = CreateUndoEntry();
     
     /* Update tracking variables */
     g_app.lastUndoLength = currentLength;
@@ -90,6 +105,11 @@ void PushUndoStack(void) {
 void ClearRedoStack(void) {
     g_queue_foreach(g_app.redoStack, FreeUndoEntry, NULL);
     g_queue_clear(g_app.redoStack);
+}
+
+void ClearUndoStack(void) {
+    g_queue_foreach(g_app.undoStack, FreeUndoEntry, NULL);
+    g_queue_clear(g_app.undoStack);
 }
 
 void DoUndo(void) {
@@ -147,4 +167,15 @@ void UndoStackCleanup(void) {
     g_queue_free(g_app.undoStack);
     g_queue_foreach(g_app.redoStack, FreeUndoEntry, NULL);
     g_queue_free(g_app.redoStack);
+    if (g_pendingState) {
+        FreeUndoEntry(g_pendingState, NULL);
+        g_pendingState = NULL;
+    }
+}
+
+void ResetPendingUndoState(void) {
+    if (g_pendingState) {
+        FreeUndoEntry(g_pendingState, NULL);
+        g_pendingState = NULL;
+    }
 }

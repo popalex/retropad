@@ -9,6 +9,9 @@ void PushUndoStack(void);
 /* Clear redo stack */
 void ClearRedoStack(void);
 
+/* Clear undo stack */
+void ClearUndoStack(void);
+
 /* Perform undo operation */
 void DoUndo(void);
 
@@ -17,3 +20,6 @@ void DoRedo(void);
 
 /* Cleanup undo/redo stacks */
 void UndoStackCleanup(void);
+
+/* Reset pending undo state (call after document reset) */
+void ResetPendingUndoState(void);

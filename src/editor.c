@@ -70,6 +70,15 @@ static void OnTextViewScrolled(GtkAdjustment *adj, gpointer data) {
     }
 }
 
+/* Proper callback for GtkTextBuffer::changed signal to redraw line numbers */
+static void OnBufferChangedRedrawLines(GtkTextBuffer *buffer, gpointer data) {
+    (void)buffer;
+    (void)data;
+    if (g_app.lineNumbersVisible && g_app.lineNumberView) {
+        gtk_widget_queue_draw(g_app.lineNumberView);
+    }
+}
+
 void ToggleLineNumbers(gboolean visible) {
     g_app.lineNumbersVisible = visible;
     if (g_app.lineNumberView) {
@@ -95,17 +104,18 @@ static void OnDragDataReceived(GtkWidget *widget, GdkDragContext *context,
     (void)user_data;
     
     gchar **uris = gtk_selection_data_get_uris(data);
+    gboolean success = FALSE;
     if (uris && uris[0]) {
         gchar *path = g_filename_from_uri(uris[0], NULL, NULL);
         if (path) {
             if (PromptSaveChanges()) {
-                LoadDocumentFromPath(path);
+                success = LoadDocumentFromPath(path);
             }
             g_free(path);
         }
         g_strfreev(uris);
     }
-    gtk_drag_finish(context, TRUE, FALSE, time);
+    gtk_drag_finish(context, success, FALSE, time);
 }
 
 void SetupDragAndDrop(void) {
@@ -164,7 +174,7 @@ GtkWidget* CreateEditorWidget(void) {
     /* Connect scroll adjustment to redraw line numbers */
     GtkAdjustment *vadj = gtk_scrolled_window_get_vadjustment(GTK_SCROLLED_WINDOW(scrolled));
     g_signal_connect(vadj, "value-changed", G_CALLBACK(OnTextViewScrolled), NULL);
-    g_signal_connect(g_app.textBuffer, "changed", G_CALLBACK(OnTextViewScrolled), NULL);
+    g_signal_connect(g_app.textBuffer, "changed", G_CALLBACK(OnBufferChangedRedrawLines), NULL);
 
     return editorBox;
 }
