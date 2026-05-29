@@ -1,0 +1,12 @@
+[Desktop Entry]
+Version=1.0
+Type=Application
+Name=retropad
+Comment=A simple plain-text editor for Linux
+Exec=retropad %F
+Icon=retropad
+Terminal=false
+Categories=Utility;TextEditor;
+MimeType=text/plain;
+Keywords=text;editor;notepad;
+StartupNotify=true

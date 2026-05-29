@@ -8,6 +8,7 @@
 #include "recent_files.h"
 #include "utils.h"
 #include "file_ops.h"
+#include "prefs.h"
 
 static gboolean on_window_delete(GtkWidget *widget, GdkEvent *event, gpointer user_data) {
     (void)widget;
@@ -16,6 +17,7 @@ static gboolean on_window_delete(GtkWidget *widget, GdkEvent *event, gpointer us
     if (!PromptSaveChanges()) {
         return TRUE;
     }
+    SavePrefs();
     gtk_main_quit();
     return FALSE;
 }
@@ -70,6 +72,9 @@ int main(int argc, char *argv[]) {
     gtk_widget_hide(g_app.findBar);
     gtk_widget_hide(g_app.replaceBar);
     gtk_widget_hide(g_app.lineNumberView);
+
+    /* Load preferences (after show_all so visibility toggles work) */
+    LoadPrefs();
 
     /* Open file from command line argument */
     if (argc > 1) {
