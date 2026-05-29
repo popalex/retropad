@@ -125,8 +125,10 @@ static gboolean WriteUTF16LE(FILE *file, const char *text, size_t length) {
     gchar *converted = g_convert(text, length, "UTF-16LE", "UTF-8", NULL, &conv_len, &error);
     if (error) {
         g_error_free(error);
+        g_free(converted);
         return FALSE;
     }
+    if (!converted) return FALSE;
     gboolean ok = fwrite(converted, 1, conv_len, file) == conv_len;
     g_free(converted);
     return ok;
@@ -142,8 +144,10 @@ static gboolean WriteUTF16BE(FILE *file, const char *text, size_t length) {
     gchar *converted = g_convert(text, length, "UTF-16BE", "UTF-8", NULL, &conv_len, &error);
     if (error) {
         g_error_free(error);
+        g_free(converted);
         return FALSE;
     }
+    if (!converted) return FALSE;
     gboolean ok = fwrite(converted, 1, conv_len, file) == conv_len;
     g_free(converted);
     return ok;
@@ -154,8 +158,10 @@ static gboolean WriteANSI(FILE *file, const char *text, size_t length) {
     gchar *converted = g_convert(text, length, "ISO-8859-1", "UTF-8", NULL, NULL, &error);
     if (error) {
         g_error_free(error);
+        g_free(converted);
         return FALSE;
     }
+    if (!converted) return FALSE;
     gsize conv_len = strlen(converted);
     gboolean ok = fwrite(converted, 1, conv_len, file) == conv_len;
     g_free(converted);
