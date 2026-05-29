@@ -9,12 +9,11 @@ gboolean FindInEdit(const char *needle, gboolean matchCase, gboolean searchDown,
     if (!needle || needle[0] == '\0') return FALSE;
 
     char *text = NULL;
-    int len = 0;
+    size_t len = 0;
     if (!GetEditText(&text, &len)) return FALSE;
 
     char *haystack = g_strdup(text);
     char *needleBuf = g_strdup(needle);
-    size_t needleLen = strlen(needle);
 
     if (!matchCase) {
         char *p = haystack;
@@ -29,34 +28,54 @@ gboolean FindInEdit(const char *needle, gboolean matchCase, gboolean searchDown,
         }
     }
 
-    /* Get search start position - use selection end for forward, selection start for backward */
+    /* Get search start position as byte offset.
+     * GTK iters use character offsets, so convert to byte offset in the UTF-8 string. */
     GtkTextIter selStart, selEnd;
-    gint searchPos;
+    gint searchBytePos;
     if (gtk_text_buffer_get_selection_bounds(g_app.textBuffer, &selStart, &selEnd)) {
-        searchPos = searchDown ? gtk_text_iter_get_offset(&selEnd) : gtk_text_iter_get_offset(&selStart);
+        if (searchDown) {
+            GtkTextIter bufStart;
+            gtk_text_buffer_get_start_iter(g_app.textBuffer, &bufStart);
+            gchar *tmp = gtk_text_buffer_get_text(g_app.textBuffer, &bufStart, &selEnd, FALSE);
+            searchBytePos = (gint)strlen(tmp);
+            g_free(tmp);
+        } else {
+            GtkTextIter bufStart;
+            gtk_text_buffer_get_start_iter(g_app.textBuffer, &bufStart);
+            gchar *tmp = gtk_text_buffer_get_text(g_app.textBuffer, &bufStart, &selStart, FALSE);
+            searchBytePos = (gint)strlen(tmp);
+            g_free(tmp);
+        }
     } else {
-        GtkTextIter cursor;
+        GtkTextIter cursor, bufStart;
         gtk_text_buffer_get_iter_at_mark(g_app.textBuffer,
             &cursor, gtk_text_buffer_get_insert(g_app.textBuffer));
-        searchPos = gtk_text_iter_get_offset(&cursor);
+        gtk_text_buffer_get_start_iter(g_app.textBuffer, &bufStart);
+        gchar *tmp = gtk_text_buffer_get_text(g_app.textBuffer, &bufStart, &cursor, FALSE);
+        searchBytePos = (gint)strlen(tmp);
+        g_free(tmp);
     }
+
+    /* Ensure searchBytePos is within bounds */
+    if (searchBytePos < 0) searchBytePos = 0;
+    if ((size_t)searchBytePos > len) searchBytePos = (gint)len;
 
     char *found = NULL;
     gboolean result = FALSE;
 
     if (searchDown) {
         /* Search forward from position */
-        found = strstr(haystack + searchPos, needleBuf);
+        found = strstr(haystack + searchBytePos, needleBuf);
         if (!found) {
             /* Wrap around to beginning */
             found = strstr(haystack, needleBuf);
         }
     } else {
-        /* Search backward - find last occurrence before searchPos */
+        /* Search backward - find last occurrence before searchBytePos */
         char *lastFound = NULL;
         char *p = haystack;
         while ((p = strstr(p, needleBuf)) != NULL) {
-            if ((p - haystack) < searchPos) {
+            if ((p - haystack) < searchBytePos) {
                 lastFound = p;
                 p += 1;
             } else {
@@ -77,10 +96,14 @@ gboolean FindInEdit(const char *needle, gboolean matchCase, gboolean searchDown,
     }
 
     if (found) {
-        gint pos = found - haystack;
-        gtk_text_buffer_get_iter_at_offset(g_app.textBuffer, outStart, pos);
+        /* Convert byte offset to character offset for GTK */
+        gint bytePos = (gint)(found - haystack);
+        gint charPos = (gint)g_utf8_strlen(text, bytePos);
+        gint needleCharLen = (gint)g_utf8_strlen(needle, -1);
+
+        gtk_text_buffer_get_iter_at_offset(g_app.textBuffer, outStart, charPos);
         gtk_text_buffer_get_iter_at_offset(g_app.textBuffer, outEnd,
-                                          pos + needleLen);
+                                          charPos + needleCharLen);
         result = TRUE;
     }
 
@@ -95,7 +118,7 @@ int ReplaceAllOccurrences(const char *needle, const char *replacement,
     if (!needle || needle[0] == '\0') return 0;
 
     char *text = NULL;
-    int len = 0;
+    size_t len = 0;
     if (!GetEditText(&text, &len)) return 0;
 
     char *searchBuf = g_strdup(text);

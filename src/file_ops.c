@@ -114,7 +114,7 @@ gboolean DoFileSave(gboolean saveAs) {
     }
 
     char *text = NULL;
-    int len = 0;
+    size_t len = 0;
     if (!GetEditText(&text, &len)) return FALSE;
 
     gboolean ok = SaveTextFile(NULL, path, text, len, g_app.encoding);

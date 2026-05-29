@@ -10,7 +10,7 @@ void UpdateTitle(void);
 void UpdateStatusBar(void);
 
 /* Get text content from editor buffer */
-gboolean GetEditText(char **bufferOut, int *lengthOut);
+gboolean GetEditText(char **bufferOut, size_t *lengthOut);
 
 /* Insert current time/date at cursor */
 void InsertTimeDate(void);

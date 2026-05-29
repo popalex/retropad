@@ -53,13 +53,13 @@ void UpdateStatusBar(void) {
     gtk_statusbar_push(GTK_STATUSBAR(g_app.statusbar), g_statusbar_context, status);
 }
 
-gboolean GetEditText(char **bufferOut, int *lengthOut) {
+gboolean GetEditText(char **bufferOut, size_t *lengthOut) {
     GtkTextIter start, end;
     gtk_text_buffer_get_bounds(g_app.textBuffer, &start, &end);
     char *text = gtk_text_buffer_get_text(g_app.textBuffer, &start, &end, FALSE);
     if (!text) return FALSE;
 
-    int len = strlen(text);
+    size_t len = strlen(text);
     if (lengthOut) *lengthOut = len;
     *bufferOut = text;
     return TRUE;
