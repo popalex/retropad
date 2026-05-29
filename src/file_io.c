@@ -71,6 +71,7 @@ static gboolean DecodeToUTF8(const guchar *data, gsize size, TextEncoding encodi
 
 gboolean LoadTextFile(void *owner, const char *path, char **textOut, size_t *lengthOut, TextEncoding *encodingOut) {
     (void)owner;
+    if (!textOut) return FALSE;
     *textOut = NULL;
     if (lengthOut) *lengthOut = 0;
     if (encodingOut) *encodingOut = ENC_UTF8;
@@ -208,7 +209,9 @@ gboolean SaveTextFile(void *owner, const char *path, const char *text, size_t le
         break;
     }
 
-    fclose(file);
+    if (fclose(file) != 0) {
+        ok = FALSE;
+    }
 
     if (ok) {
         /* Atomic rename */

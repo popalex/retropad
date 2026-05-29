@@ -36,10 +36,8 @@ gboolean PromptSaveChanges(void) {
 /* Helper: clear undo/redo state for a fresh document */
 static void ClearDocumentState(void) {
     ClearRedoStack();
-    while (!g_queue_is_empty(g_app.undoStack)) {
-        gpointer data = g_queue_pop_head(g_app.undoStack);
-        g_free(data);
-    }
+    ClearUndoStack();
+    ResetPendingUndoState();
     g_app.lastUndoLength = 0;
     g_app.lastUndoTime = 0;
     g_app.lastChar = '\0';

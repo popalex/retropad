@@ -14,11 +14,6 @@
 #define LINE_NUMBER_MARGIN_WIDTH 50
 #define RECENT_FILES_PATH ".retropad_recent"
 
-typedef struct UndoRedoEntry {
-    char *text;
-    gint cursorPos;
-} UndoRedoEntry;
-
 typedef struct AppState {
     GtkWidget *window;
     GtkWidget *textView;
@@ -35,7 +30,6 @@ typedef struct AppState {
     GtkWidget *replaceBar;
     GtkWidget *replaceEntry;
     gboolean matchCase;
-    gboolean searchDown;
     /* Undo/Redo stack */
     GQueue *undoStack;
     GQueue *redoStack;
@@ -51,6 +45,8 @@ typedef struct AppState {
     /* Recent files */
     GList *recentFiles;
     GtkWidget *recentFilesMenu;
+    /* Shared CSS provider for font styling */
+    GtkCssProvider *cssProvider;
     /* Toggle menu items (for checkmarks) */
     GtkWidget *wordWrapMenuItem;
     GtkWidget *statusBarMenuItem;

@@ -12,20 +12,15 @@ gboolean FindInEdit(const char *needle, gboolean matchCase, gboolean searchDown,
     size_t len = 0;
     if (!GetEditText(&text, &len)) return FALSE;
 
-    char *haystack = g_strdup(text);
-    char *needleBuf = g_strdup(needle);
+    char *haystack = NULL;
+    char *needleBuf = NULL;
 
     if (!matchCase) {
-        char *p = haystack;
-        while (*p) {
-            *p = g_ascii_tolower(*p);
-            p++;
-        }
-        p = needleBuf;
-        while (*p) {
-            *p = g_ascii_tolower(*p);
-            p++;
-        }
+        haystack = g_utf8_casefold(text, -1);
+        needleBuf = g_utf8_casefold(needle, -1);
+    } else {
+        haystack = g_strdup(text);
+        needleBuf = g_strdup(needle);
     }
 
     /* Get search start position as byte offset.
@@ -121,20 +116,15 @@ int ReplaceAllOccurrences(const char *needle, const char *replacement,
     size_t len = 0;
     if (!GetEditText(&text, &len)) return 0;
 
-    char *searchBuf = g_strdup(text);
-    char *needleBuf = g_strdup(needle);
+    char *searchBuf = NULL;
+    char *needleBuf = NULL;
 
     if (!matchCase) {
-        char *p = searchBuf;
-        while (*p) {
-            *p = g_ascii_tolower(*p);
-            p++;
-        }
-        p = needleBuf;
-        while (*p) {
-            *p = g_ascii_tolower(*p);
-            p++;
-        }
+        searchBuf = g_utf8_casefold(text, -1);
+        needleBuf = g_utf8_casefold(needle, -1);
+    } else {
+        searchBuf = g_strdup(text);
+        needleBuf = g_strdup(needle);
     }
 
     int count = 0;

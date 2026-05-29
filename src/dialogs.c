@@ -32,8 +32,9 @@ static void on_goto_entry_changed(GtkEditable *editable, gpointer data) {
     /* Validate: must be a number between 1 and totalLines */
     gboolean valid = FALSE;
     if (text && text[0] != '\0') {
-        int line = atoi(text);
-        valid = (line >= 1 && line <= totalLines);
+        char *endptr = NULL;
+        long line = strtol(text, &endptr, 10);
+        valid = (endptr != text && *endptr == '\0' && line >= 1 && line <= totalLines);
     }
     
     gtk_widget_set_sensitive(goButton, valid);
@@ -89,8 +90,9 @@ void DoGotoLine(void) {
     
     if (gtk_dialog_run(GTK_DIALOG(dialog)) == GTK_RESPONSE_ACCEPT) {
         const char *text = gtk_entry_get_text(GTK_ENTRY(entry));
-        int line = atoi(text);
-        if (line >= 1 && line <= totalLines) {
+        char *endptr = NULL;
+        long line = strtol(text, &endptr, 10);
+        if (endptr != text && *endptr == '\0' && line >= 1 && line <= totalLines) {
             GtkTextIter iter;
             gtk_text_buffer_get_iter_at_line(g_app.textBuffer, &iter, line - 1);
             gtk_text_buffer_place_cursor(g_app.textBuffer, &iter);
@@ -116,17 +118,21 @@ void DoSelectFont(void) {
                 pango_font_description_free(g_app.fontDesc);
             }
             g_app.fontDesc = pango_font_description_copy(fontDesc);
-            GtkCssProvider *provider = gtk_css_provider_new();
+            pango_font_description_free(fontDesc);
+
             gchar *font_name = pango_font_description_to_string(g_app.fontDesc);
             gchar *css = g_strdup_printf("textview { font: %s; }", font_name);
-            gtk_css_provider_load_from_data(provider, css, -1, NULL);
-            
-            GtkStyleContext *context = gtk_widget_get_style_context(g_app.textView);
-            gtk_style_context_add_provider(context, GTK_STYLE_PROVIDER(provider), GTK_STYLE_PROVIDER_PRIORITY_APPLICATION);
+
+            if (!g_app.cssProvider) {
+                g_app.cssProvider = gtk_css_provider_new();
+                GtkStyleContext *context = gtk_widget_get_style_context(g_app.textView);
+                gtk_style_context_add_provider(context, GTK_STYLE_PROVIDER(g_app.cssProvider),
+                                               GTK_STYLE_PROVIDER_PRIORITY_APPLICATION);
+            }
+            gtk_css_provider_load_from_data(g_app.cssProvider, css, -1, NULL);
             
             g_free(css);
             g_free(font_name);
-            g_object_unref(provider);
             SavePrefs();
         }
     }
