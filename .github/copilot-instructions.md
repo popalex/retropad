@@ -21,6 +21,7 @@ retropad is a Petzold-style Notepad clone written in **plain C11** for **Linux**
 | `print.h/c` | GTK print support | ~80 |
 | `recent_files.h/c` | MRU file list persistence and menu | ~100 |
 | `utils.h/c` | Shared helpers (UpdateTitle, UpdateStatusBar, etc.) | ~90 |
+| `prefs.h/c` | Preferences load/save (`~/.config/retropad/config.ini`) via GKeyFile | ~130 |
 
 ### Global State Pattern
 All application state lives in a single global `AppState` struct (`g_app`) defined in `app_state.c`:
@@ -74,15 +75,18 @@ char *text = gtk_text_buffer_get_text(g_app.textBuffer, &start, &end, FALSE);
 ```
 
 ### Undo/Redo Implementation (undo.c)
-Custom undo stack using `GQueue` with smart grouping (500ms timeout, break on punctuation). When modifying buffer programmatically, set `g_app.isUndoRedoInProgress = TRUE` to prevent spurious undo entries.
+Custom undo stack using `GQueue` with smart grouping (500ms timeout, break on punctuation). When modifying buffer programmatically, set `g_app.isProgrammaticChange = TRUE` to suppress undo push and modified-state update, then set it back to `FALSE` after. `isUndoRedoInProgress` is used specifically during undo/redo operations.
 
 ### File Encoding (file_io.c)
 - `TextEncoding` enum: `ENC_UTF8`, `ENC_UTF16LE`, `ENC_UTF16BE`, `ENC_ANSI`
-- Detection via BOM in `DetectEncoding()`
-- Default save format: UTF-8 with BOM
+- Detection via BOM in `DetectEncoding()`; BOM-less files are validated with `g_utf8_validate()` and fall back to `ENC_ANSI` (ISO-8859-1) if not valid UTF-8
+- Default save format: **UTF-8 without BOM** (Linux-friendly); atomic save via temp file + rename
 
 ### Modified State
-Always update `g_app.modified` and call `UpdateTitle()` after text changes. The title shows `*filename - retropad` when modified.
+Always update `g_app.modified` and call `UpdateTitle()` after text changes. The title shows `*filename - retropad` when modified. Programmatic buffer changes (open/new) use `g_app.isProgrammaticChange = TRUE` to avoid spurious modified state.
+
+### Preferences (prefs.c)
+`LoadPrefs()` / `SavePrefs()` use `GKeyFile` to read/write `~/.config/retropad/config.ini`. Load is called after `gtk_widget_show_all()` at startup. Save is called on window close, font change, and each toggle of word wrap / status bar / line numbers.
 
 ## Adding New Features
 

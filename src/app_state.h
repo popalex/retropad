@@ -40,6 +40,7 @@ typedef struct AppState {
     GQueue *undoStack;
     GQueue *redoStack;
     gboolean isUndoRedoInProgress;
+    gboolean isProgrammaticChange;
     /* Smart undo/redo */
     gint lastUndoLength;
     gint64 lastUndoTime;

@@ -1,6 +1,7 @@
 // Utility functions implementation for retropad
 #include "utils.h"
 #include "app_state.h"
+#include "prefs.h"
 #include <string.h>
 #include <time.h>
 
@@ -85,6 +86,7 @@ void SetWordWrap(gboolean enabled) {
     } else {
         gtk_text_view_set_wrap_mode(GTK_TEXT_VIEW(g_app.textView), GTK_WRAP_NONE);
     }
+    SavePrefs();
 }
 
 void ToggleStatusBar(gboolean visible) {
@@ -94,4 +96,5 @@ void ToggleStatusBar(gboolean visible) {
     } else {
         gtk_widget_hide(g_app.statusbar);
     }
+    SavePrefs();
 }

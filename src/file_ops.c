@@ -33,12 +33,8 @@ gboolean PromptSaveChanges(void) {
     return res == GTK_RESPONSE_NO;
 }
 
-void DoFileNew(void) {
-    if (!PromptSaveChanges()) return;
-    gtk_text_buffer_set_text(g_app.textBuffer, "", -1);
-    g_app.currentPath[0] = '\0';
-    g_app.encoding = ENC_UTF8;
-    g_app.modified = FALSE;
+/* Helper: clear undo/redo state for a fresh document */
+static void ClearDocumentState(void) {
     ClearRedoStack();
     while (!g_queue_is_empty(g_app.undoStack)) {
         gpointer data = g_queue_pop_head(g_app.undoStack);
@@ -47,6 +43,17 @@ void DoFileNew(void) {
     g_app.lastUndoLength = 0;
     g_app.lastUndoTime = 0;
     g_app.lastChar = '\0';
+}
+
+void DoFileNew(void) {
+    if (!PromptSaveChanges()) return;
+    g_app.isProgrammaticChange = TRUE;
+    gtk_text_buffer_set_text(g_app.textBuffer, "", -1);
+    g_app.isProgrammaticChange = FALSE;
+    g_app.currentPath[0] = '\0';
+    g_app.encoding = ENC_UTF8;
+    g_app.modified = FALSE;
+    ClearDocumentState();
     UpdateTitle();
     UpdateStatusBar();
 }
@@ -88,6 +95,7 @@ gboolean DoFileSave(gboolean saveAs) {
             char *filename = gtk_file_chooser_get_filename(GTK_FILE_CHOOSER(dialog));
             if (filename) {
                 strncpy(path, filename, MAX_PATH_BUFFER - 1);
+                path[MAX_PATH_BUFFER - 1] = '\0';
                 g_free(filename);
             } else {
                 gtk_widget_destroy(dialog);
@@ -99,8 +107,10 @@ gboolean DoFileSave(gboolean saveAs) {
         }
         gtk_widget_destroy(dialog);
         strncpy(g_app.currentPath, path, MAX_PATH_BUFFER - 1);
+        g_app.currentPath[MAX_PATH_BUFFER - 1] = '\0';
     } else {
         strncpy(path, g_app.currentPath, MAX_PATH_BUFFER - 1);
+        path[MAX_PATH_BUFFER - 1] = '\0';
     }
 
     char *text = NULL;
@@ -113,6 +123,15 @@ gboolean DoFileSave(gboolean saveAs) {
     if (ok) {
         g_app.modified = FALSE;
         UpdateTitle();
+    } else {
+        GtkWidget *errDialog = gtk_message_dialog_new(
+            GTK_WINDOW(g_app.window),
+            GTK_DIALOG_MODAL,
+            GTK_MESSAGE_ERROR,
+            GTK_BUTTONS_OK,
+            "Could not save file:\n%s", path);
+        gtk_dialog_run(GTK_DIALOG(errDialog));
+        gtk_widget_destroy(errDialog);
     }
     return ok;
 }
@@ -121,23 +140,27 @@ gboolean LoadDocumentFromPath(const char *path) {
     char *text = NULL;
     TextEncoding enc = ENC_UTF8;
     if (!LoadTextFile(NULL, path, &text, NULL, &enc)) {
+        GtkWidget *errDialog = gtk_message_dialog_new(
+            GTK_WINDOW(g_app.window),
+            GTK_DIALOG_MODAL,
+            GTK_MESSAGE_ERROR,
+            GTK_BUTTONS_OK,
+            "Could not open file:\n%s", path);
+        gtk_dialog_run(GTK_DIALOG(errDialog));
+        gtk_widget_destroy(errDialog);
         return FALSE;
     }
 
+    g_app.isProgrammaticChange = TRUE;
     gtk_text_buffer_set_text(g_app.textBuffer, text, -1);
-    
+    g_app.isProgrammaticChange = FALSE;
+
     g_free(text);
     strncpy(g_app.currentPath, path, MAX_PATH_BUFFER - 1);
+    g_app.currentPath[MAX_PATH_BUFFER - 1] = '\0';
     g_app.encoding = enc;
     g_app.modified = FALSE;
-    ClearRedoStack();
-    while (!g_queue_is_empty(g_app.undoStack)) {
-        gpointer data = g_queue_pop_head(g_app.undoStack);
-        g_free(data);
-    }
-    g_app.lastUndoLength = 0;
-    g_app.lastUndoTime = 0;
-    g_app.lastChar = '\0';
+    ClearDocumentState();
     AddRecentFile(path);
     UpdateTitle();
     UpdateStatusBar();

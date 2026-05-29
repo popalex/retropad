@@ -4,6 +4,7 @@
 #include "undo.h"
 #include "utils.h"
 #include "file_ops.h"
+#include "prefs.h"
 
 static gboolean OnLineNumbersDraw(GtkWidget *widget, cairo_t *cr, gpointer data) {
     (void)data;
@@ -21,13 +22,16 @@ static gboolean OnLineNumbersDraw(GtkWidget *widget, cairo_t *cr, gpointer data)
         pango_layout_set_font_description(layout, g_app.fontDesc);
     }
     
-    GtkTextIter iter;
-    gtk_text_buffer_get_start_iter(g_app.textBuffer, &iter);
-    
     GdkRectangle visible;
     gtk_text_view_get_visible_rect(GTK_TEXT_VIEW(g_app.textView), &visible);
     
-    int lineNum = 1;
+    /* Start iteration from the first visible line instead of buffer start */
+    GtkTextIter iter;
+    gtk_text_view_get_iter_at_location(GTK_TEXT_VIEW(g_app.textView), &iter,
+                                       visible.x, visible.y);
+    gtk_text_iter_set_line_offset(&iter, 0);
+    
+    int lineNum = gtk_text_iter_get_line(&iter) + 1;
     
     while (!gtk_text_iter_is_end(&iter)) {
         GdkRectangle loc;
@@ -37,17 +41,18 @@ static gboolean OnLineNumbersDraw(GtkWidget *widget, cairo_t *cr, gpointer data)
         gtk_text_view_buffer_to_window_coords(GTK_TEXT_VIEW(g_app.textView),
             GTK_TEXT_WINDOW_WIDGET, 0, loc.y, NULL, &winY);
         
-        if (winY >= -loc.height && winY <= visible.height + loc.height) {
-            char numStr[16];
-            snprintf(numStr, sizeof(numStr), "%d", lineNum);
-            pango_layout_set_text(layout, numStr, -1);
-            
-            int tw, th;
-            pango_layout_get_pixel_size(layout, &tw, &th);
-            
-            cairo_move_to(cr, LINE_NUMBER_MARGIN_WIDTH - tw - 5, winY);
-            pango_cairo_show_layout(cr, layout);
-        }
+        /* Stop once we are past the visible area */
+        if (winY > visible.height + loc.height) break;
+        
+        char numStr[16];
+        snprintf(numStr, sizeof(numStr), "%d", lineNum);
+        pango_layout_set_text(layout, numStr, -1);
+        
+        int tw, th;
+        pango_layout_get_pixel_size(layout, &tw, &th);
+        
+        cairo_move_to(cr, LINE_NUMBER_MARGIN_WIDTH - tw - 5, winY);
+        pango_cairo_show_layout(cr, layout);
         
         if (!gtk_text_iter_forward_line(&iter)) break;
         lineNum++;
@@ -77,6 +82,7 @@ void ToggleLineNumbers(gboolean visible) {
     if (g_app.lineNumbersMenuItem) {
         gtk_check_menu_item_set_active(GTK_CHECK_MENU_ITEM(g_app.lineNumbersMenuItem), visible);
     }
+    SavePrefs();
 }
 
 static void OnDragDataReceived(GtkWidget *widget, GdkDragContext *context,
@@ -113,6 +119,7 @@ void SetupDragAndDrop(void) {
 void on_text_changed(GtkTextBuffer *buffer, gpointer user_data) {
     (void)buffer;
     (void)user_data;
+    if (g_app.isProgrammaticChange) return;
     if (!g_app.isUndoRedoInProgress) {
         PushUndoStack();
         ClearRedoStack();

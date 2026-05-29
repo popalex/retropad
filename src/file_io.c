@@ -3,6 +3,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <unistd.h>
 #include <glib.h>
 #include <glib/gstdio.h>
 
@@ -16,8 +17,11 @@ static TextEncoding DetectEncoding(const guchar *data, gsize size) {
     if (size >= 3 && data[0] == 0xEF && data[1] == 0xBB && data[2] == 0xBF) {
         return ENC_UTF8;
     }
-    // Assume UTF-8 for Linux
-    return ENC_UTF8;
+    /* No BOM: validate as UTF-8; fall back to ANSI (ISO-8859-1) if invalid */
+    if (g_utf8_validate((const gchar *)data, (gssize)size, NULL)) {
+        return ENC_UTF8;
+    }
+    return ENC_ANSI;
 }
 
 static gboolean DecodeToUTF8(const guchar *data, gsize size, TextEncoding encoding, char **outText, size_t *outLength) {
@@ -104,11 +108,7 @@ gboolean LoadTextFile(void *owner, const char *path, char **textOut, size_t *len
     return TRUE;
 }
 
-static gboolean WriteUTF8WithBOM(FILE *file, const char *text, size_t length) {
-    static const guchar bom[] = {0xEF, 0xBB, 0xBF};
-    if (fwrite(bom, sizeof(bom), 1, file) != 1) {
-        return FALSE;
-    }
+static gboolean WriteUTF8(FILE *file, const char *text, size_t length) {
     if (fwrite(text, 1, length, file) != length) {
         return FALSE;
     }
@@ -164,8 +164,20 @@ static gboolean WriteANSI(FILE *file, const char *text, size_t length) {
 
 gboolean SaveTextFile(void *owner, const char *path, const char *text, size_t length, TextEncoding encoding) {
     (void)owner;
-    FILE *file = g_fopen(path, "wb");
+
+    /* Build a temp path in the same directory for atomic save */
+    gchar *tempPath = g_strdup_printf("%s.tmp.XXXXXX", path);
+    int fd = g_mkstemp(tempPath);
+    if (fd < 0) {
+        g_free(tempPath);
+        return FALSE;
+    }
+
+    FILE *file = fdopen(fd, "wb");
     if (!file) {
+        close(fd);
+        g_unlink(tempPath);
+        g_free(tempPath);
         return FALSE;
     }
 
@@ -182,10 +194,26 @@ gboolean SaveTextFile(void *owner, const char *path, const char *text, size_t le
         break;
     case ENC_UTF8:
     default:
-        ok = WriteUTF8WithBOM(file, text, length);
+        /* Save UTF-8 without BOM: clean Linux default.
+         * Files originally loaded with a UTF-8 BOM preserve their BOM
+         * only if the encoding was detected as ENC_UTF8 via BOM path;
+         * that is handled identically here as plain UTF-8. */
+        ok = WriteUTF8(file, text, length);
         break;
     }
 
     fclose(file);
+
+    if (ok) {
+        /* Atomic rename */
+        if (g_rename(tempPath, path) != 0) {
+            ok = FALSE;
+            g_unlink(tempPath);
+        }
+    } else {
+        g_unlink(tempPath);
+    }
+
+    g_free(tempPath);
     return ok;
 }

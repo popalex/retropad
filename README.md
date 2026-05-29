@@ -1,6 +1,6 @@
 # retropad
 
-A Petzold-style Notepad clone written in mostly plain C for Linux using GTK3. It keeps the classic menus, accelerators, word wrap toggle, status bar, find/replace, font picker, time/date insertion, and BOM-aware load/save. Printing is intentionally omitted.
+A Petzold-style Notepad clone written in plain C11 for Linux using GTK3. Keeps the classic menus, accelerators, word wrap toggle, status bar, find/replace, font picker, time/date insertion, and BOM-aware load/save. Designed to be clean, simple, and focused — not an IDE.
 
 ## Prerequisites (Linux)
 
@@ -27,7 +27,7 @@ sudo pacman -S base-devel cmake gtk3 glib2
 
 ## Get the code
 ```bash
-git clone https://github.com/your/repo.git retropad
+git clone https://github.com/popalex/retropad.git retropad
 cd retropad
 ```
 
@@ -46,28 +46,80 @@ make clean
 cd .. && rm -rf build
 ```
 
+## Install (system-wide)
+```bash
+cd build
+cmake .. -DCMAKE_BUILD_TYPE=Release
+make
+sudo make install
+```
+
+Installs the binary to `/usr/local/bin`, the `.desktop` entry to `/usr/local/share/applications`, and the icon (if present) to the hicolor icon theme.
+
 ## Run
 ```bash
 ./build/retropad
-# or after building, from the build directory:
-./retropad
+# or with a file argument:
+./build/retropad path/to/file.txt
 ```
 
 ## Features & notes
 - Menus: File, Edit, Format, View, Help with standard keyboard shortcuts (Ctrl+N/O/S, Ctrl+F, Ctrl+H, etc.).
-- Word Wrap toggles text wrapping; status bar displays line and column numbers.
+- Word wrap toggles text wrapping; status bar displays line/column numbers and encoding.
 - Find/Replace bars with find next/previous and replace all functionality.
 - Font picker for custom fonts and sizes.
-- Time/date insertion.
-- File I/O: detects UTF-8/UTF-16/ANSI encodings via BOM detection; saves with UTF-8 BOM by default.
-- Status bar shows current line/column and total line count.
-- Cut, copy, paste, select all with clipboard integration.
+- Time/date insertion (F5).
+- Drag-and-drop file opening.
+- Go To Line (Ctrl+G).
+- Printing via GTK print dialog.
+- File I/O: detects UTF-8/UTF-16LE/UTF-16BE/ANSI encodings via BOM; BOM-less files are validated as UTF-8 and fall back to ISO-8859-1 (ANSI) if invalid. Saves as **UTF-8 without BOM** by default (Linux-friendly); UTF-16 and ANSI files are round-tripped in their original encoding.
+- Atomic save: file is written to a temporary path then renamed, preventing data loss on write failure.
+- Error dialogs on load/save failure.
+- Persistent preferences stored in `~/.config/retropad/config.ini` (window size, word wrap, status bar, line numbers, font). Loaded at startup, saved on exit and when changed.
+- Recent files list (up to 5 entries) persisted in `~/.retropad_recent`.
+- Custom undo/redo with smart grouping (groups consecutive typing, breaks on punctuation/500ms timeout).
+- Line numbers can be toggled from View menu; rendering only iterates visible lines for efficiency.
 
 ## Project layout
-- `retropad.c` — main application, GTK3 UI, window setup, menus, callbacks.
-- `file_io.c/.h` — GTK3 file dialogs and encoding-aware load/save helpers.
-- `CMakeLists.txt` — CMake build configuration with GTK3 dependencies.
-- `build/` — generated build artifacts and executable (after building).
+
+```
+src/
+  main.c          — Entry point, window creation, main loop
+  app_state.h/c   — Global AppState struct and initialization
+  menu.h/c        — Menu bar, accelerators, all menu callbacks
+  editor.h/c      — Text view, line numbers, drag-drop, buffer callbacks
+  undo.h/c        — Smart undo/redo stack with grouping
+  file_ops.h/c    — High-level file operations (New/Open/Save/Load)
+  file_io.h/c     — Low-level BOM-aware file read/write with atomic save
+  find_replace.h/c — Find/replace bar and search logic
+  dialogs.h/c     — Go To Line, Font selection, About dialogs
+  print.h/c       — GTK print support
+  recent_files.h/c — MRU file list persistence and menu
+  utils.h/c       — Shared helpers (UpdateTitle, UpdateStatusBar, etc.)
+  prefs.h/c       — Preferences load/save via GKeyFile
+CMakeLists.txt    — CMake build + install configuration
+retropad.desktop  — freedesktop.org desktop entry for Linux integration
+res/              — Application resources (icon)
+```
+
+## Design goals
+
+- **Simple**: one window, one file, plain text only.
+- **Fast**: minimal dependencies, GTK3, no heavy frameworks.
+- **Linux-native**: UTF-8 without BOM, XDG config dir, `.desktop` integration.
+- **Reliable**: atomic saves, error dialogs, persistent preferences.
+
+## Non-goals
+
+The following are intentionally out of scope:
+
+- Syntax highlighting
+- Tabs / multi-document interface
+- Plugin system
+- Split panes or file tree/sidebar
+- Terminal integration
+- Project/workspace concepts
+- LSP or autocomplete
 
 ## Common build issues
 - If GTK3 headers are not found, install `libgtk-3-dev` (Ubuntu/Debian) or equivalent for your distro.
@@ -80,8 +132,3 @@ cd .. && rm -rf build
   ```
 
   Then retry the build steps.
-
-## Notes
-- Custom undo/redo implementation with smart grouping (groups consecutive typing, breaks on punctuation/500ms timeout).
-- Drag-and-drop file opening is supported.
-- Line numbers can be toggled from View menu.

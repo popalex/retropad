@@ -12,6 +12,7 @@ void AppStateInit(void) {
     g_app.undoStack = g_queue_new();
     g_app.redoStack = g_queue_new();
     g_app.isUndoRedoInProgress = FALSE;
+    g_app.isProgrammaticChange = FALSE;
     g_app.lastUndoLength = 0;
     g_app.lastUndoTime = 0;
     g_app.lastChar = '\0';

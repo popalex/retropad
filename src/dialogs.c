@@ -1,6 +1,7 @@
 // Dialog functions implementation for retropad
 #include "dialogs.h"
 #include "app_state.h"
+#include "prefs.h"
 #include <stdlib.h>
 
 /* Filter input to only allow digits */
@@ -126,6 +127,7 @@ void DoSelectFont(void) {
             g_free(css);
             g_free(font_name);
             g_object_unref(provider);
+            SavePrefs();
         }
     }
     gtk_widget_destroy(dialog);
